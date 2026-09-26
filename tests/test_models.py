@@ -7,7 +7,17 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from claimforge.models import Claim, ClaimType, Evidence, EvidenceSource, dump_claims, dump_evidence
+from claimforge.models import (
+    Claim,
+    ClaimType,
+    Evidence,
+    EvidenceSource,
+    Verdict,
+    VerdictLabel,
+    dump_claims,
+    dump_evidence,
+    dump_verdicts,
+)
 
 
 def _claim(**overrides: object) -> Claim:
@@ -141,3 +151,81 @@ def test_evidence_source_values() -> None:
 def test_evidence_rejects_invalid_payloads(overrides: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         _evidence(**overrides)
+
+
+def _verdict(**overrides: object) -> Verdict:
+    payload: dict[str, object] = {
+        "claim_id": "clm_abc",
+        "label": VerdictLabel.support,
+        "confidence": 0.75,
+        "rationale": "Relevance and coverage are high, and cues lean support.",
+        "evidence_ids": ["ev_abc", "ev_def"],
+        "rubric_scores": {
+            "relevance": 0.8,
+            "coverage": 1.0,
+            "stance_lexical": 0.6,
+        },
+    }
+    payload.update(overrides)
+    return Verdict.model_validate(payload)
+
+
+def test_verdict_round_trips_through_json() -> None:
+    verdict = _verdict()
+    encoded = json.dumps(dump_verdicts([verdict]))
+    decoded = json.loads(encoded)
+    assert decoded == [
+        {
+            "claim_id": "clm_abc",
+            "label": "support",
+            "confidence": 0.75,
+            "rationale": "Relevance and coverage are high, and cues lean support.",
+            "evidence_ids": ["ev_abc", "ev_def"],
+            "rubric_scores": {
+                "relevance": 0.8,
+                "coverage": 1.0,
+                "stance_lexical": 0.6,
+            },
+        }
+    ]
+    restored = Verdict.model_validate(decoded[0])
+    assert restored == verdict
+    assert restored.label is VerdictLabel.support
+
+
+def test_verdict_allows_null_rubric_scores_and_an_empty_pack() -> None:
+    verdict = _verdict(
+        label="insufficient",
+        evidence_ids=[],
+        rubric_scores={"relevance": 0.0, "coverage": None, "stance_lexical": 0.0},
+    )
+    dumped = verdict.to_json_dict()
+    assert dumped["label"] == "insufficient"
+    assert dumped["evidence_ids"] == []
+    assert dumped["rubric_scores"]["coverage"] is None
+
+
+def test_verdict_label_values() -> None:
+    assert [item.value for item in VerdictLabel] == ["support", "refute", "insufficient"]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"extra": "nope"},
+        {"claim_id": "  "},
+        {"label": "neutral"},
+        {"confidence": -0.01},
+        {"confidence": 1.01},
+        {"confidence": float("nan")},
+        {"rationale": "   "},
+        {"evidence_ids": ["ok", " "]},
+        {"rubric_scores": {"relevance": 1.2}},
+        {"rubric_scores": {"stance_lexical": -1.1}},
+        {"rubric_scores": {"relevance": float("inf")}},
+        {"rubric_scores": {"": 0.2}},
+    ],
+)
+def test_verdict_rejects_invalid_payloads(overrides: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        _verdict(**overrides)

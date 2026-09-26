@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claimforge"
+version = "0.1.0"
+description = "Live scientific claim verifier with LLM-as-judge evals."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Shehbaz Pathan" }]
+keywords = ["science", "claims", "openalex", "evaluation"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[project.urls]
+Homepage = "https://github.com/shehbaz0101/claimforge"
+Repository = "https://github.com/shehbaz0101/claimforge"
+
+[project.scripts]
+claimforge = "claimforge.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "integration: live network calls; soft-skip on connectivity or rate limits",
+]

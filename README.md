@@ -1,22 +1,44 @@
 # ClaimForge
 
-ClaimForge is a live scientific claim verifier. It will extract atomic claims
-from text, retrieve literature that bears on them, and record an LLM judge's
-verdict (support, refute, or insufficient evidence).
+ClaimForge checks a scientific claim against the literature and records a
+verdict: support, refute, or insufficient evidence. It extracts atomic claims
+from abstracts, retrieves evidence from OpenAlex, arXiv, and Semantic
+Scholar, ranks that pack, and judges it with a rubric. An optional LLM path
+runs only when both `CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` are
+set. Leave them unset to stay on the rule extractor and the rubric.
 
-Day 1 is the scaffold and an OpenAlex smoke test. Day 2 extracts claims from
-abstracts with a rule-based extractor that needs no API key. An optional LLM
-path runs only when `CLAIMFORGE_LLM_*` is set. Day 3 retrieves evidence from
-OpenAlex, arXiv, and Semantic Scholar. Day 4 re-scores that pack and keeps
-the top matches. Day 5 judges the pack with a rubric and records support,
-refute, or insufficient evidence. The same LLM variables can replace that
-rubric. Leave them unset to stay on the rubric. Day 6 scores a frozen gold
-fixture with the rubric and prints accuracy, per-label F1, and agreement.
-That command does not use the network. Day 7 serves the same verify and
-judge paths over HTTP, and `claimforge eval` can score a directory of
-fixtures or several files in one run. Day 8 paces catalog hosts, skips a
-catalog after repeated hard failures, rate-limits `POST /verify`, and adds
-an offline mode that does not open a network connection.
+## Quickstart
+
+Python 3.11 or newer.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Offline verify uses the Burgers cassette and does not contact a catalog:
+
+```bash
+claimforge verify --offline --ranker lexical \
+  --text "Physics-informed neural networks reduce the error on the Burgers equation."
+```
+
+Score the gold fixture. That command is also offline:
+
+```bash
+claimforge eval --fixture tests/fixtures/gold_claims.json
+```
+
+Serve the HTTP API on `127.0.0.1:8000`:
+
+```bash
+claimforge serve
+```
+
+`claimforge demo` prints verify, judge, and eval in one report.
+`scripts/demo.sh` runs the same command. Sample JSON from the two commands
+above is in [docs/samples/](docs/samples/).
 
 ## Why this shape
 
@@ -24,25 +46,26 @@ Scientific claims are only useful to check when the evidence path is
 repeatable. OpenAlex is a public, keyless works catalog, so the first
 network hop can be real without hiding a credential in the repo. Responses
 are cached on disk because the same work lookup will be repeated by later
-retrieval and eval runs, and because the public pool rate-limits anonymous
-clients. The verifier itself stays a pipeline with three stages so the
-extractor, the retriever, and the judge can be tested apart from each other.
+retrieval runs, and because the public pool rate-limits anonymous clients.
+The verifier itself stays a pipeline with three stages so the extractor, the
+retriever, and the judge can be tested apart from each other. Gold eval
+scores a saved pack and does not use that cache.
 
 ## Architecture
 
-Day 1 implements the cache and a works search. Day 2 implements claim
-extraction from abstracts. Day 3 implements multi-source evidence retrieval.
-Day 4 ranks the pack with a local embedding model or with TF-IDF cosine.
-Day 5 judges that pack. Day 6 scores a gold fixture against that judge.
-Day 7 is a small FastAPI service in front of verify, judge, and eval.
-Day 8 adds host pacing, a per-source failure skip, a `/verify` rate limit,
-and offline cassettes. See [docs/architecture.md](docs/architecture.md).
+Days 1–5 are the cache, claim extraction, multi-source retrieval, ranking,
+and the rubric judge. Day 6 scores a gold fixture. Day 7 serves verify,
+judge, and eval over HTTP. Day 8 adds host pacing, a per-source failure
+skip, a `/verify` rate limit, and offline cassettes. Day 9 is the offline
+demo and the sample JSON under `docs/samples/`. See
+[docs/architecture.md](docs/architecture.md).
 
 ```mermaid
 flowchart LR
   source[Source text] --> extract[Claim extract]
   extract --> claims[Atomic claims]
   claims --> retrieve[Retrieve evidence]
+  cassette[Offline cassette] --> retrieve
   retrieve --> openalex[OpenAlex]
   retrieve --> arxiv[arXiv]
   retrieve --> s2[Semantic Scholar]
@@ -54,7 +77,13 @@ flowchart LR
   claims --> judge[Rubric judge]
   rank --> judge
   judge --> verdict[Support, refute, or insufficient]
+  gold[Gold fixture] --> evalNode[Rubric eval]
+  evalNode --> metrics[Accuracy, F1, agreement]
 ```
+
+Offline verify reads a cassette instead of the catalogs. Eval scores a gold
+fixture with the rubric and does not retrieve. The HTTP routes are in
+[docs/architecture.md](docs/architecture.md).
 
 ## Setup
 
@@ -95,6 +124,24 @@ Leave them unset to stay on the rule extractor and the rubric judge.
 
 Cached HTTP bodies are written to `data/cache/` and gitignored. The directory
 is kept with a short note so a fresh clone still has a place to write.
+
+## Demo
+
+```bash
+claimforge demo
+./scripts/demo.sh
+```
+
+That run is offline. It verifies the Burgers cassette with the lexical
+ranker, judges the ranked pack, and scores `tests/fixtures/gold_claims.json`.
+`CLAIMFORGE_LLM_*` is ignored for the duration of the command and then
+restored, so a configured model is not called. Pass `--fixture` to score a
+different gold file. The command exits 1 when the cassette does not match,
+which leaves an insufficient verdict on stdout.
+
+`docs/samples/verify.json` is stdout from `verify --offline --ranker lexical`
+on that claim. `docs/samples/eval.json` is stdout from
+`eval --fixture tests/fixtures/gold_claims.json --format json`.
 
 ## Smoke run
 
@@ -304,6 +351,16 @@ pushes to `main`, and it does not install `[embeddings]`.
 pytest -m "not integration"
 ```
 
+Optional lint is a `ruff check` over pyflakes, import order, and
+pycodestyle errors other than line length. CI runs it. Install the extra
+when you want the same check locally:
+
+```bash
+pip install -e ".[lint]"
+ruff check .
+pre-commit run --all-files
+```
+
 Live OpenAlex and evidence-retrieval checks soft-skip when the network fails
 or a provider returns 401, 429, or a transient 5xx:
 
@@ -335,6 +392,9 @@ pytest -m integration
   count toward the skip.
 - Offline mode reads cassettes and the disk cache only. It does not refresh
   a stale cache. Delete `data/cache` and leave offline mode to fetch again.
+- `claimforge demo` and the JSON in `docs/samples/` use the lexical ranker
+  and the rubric. They do not show embedding scores or an LLM verdict.
+  Passages in the cassette and the gold fixture are synthetic.
 - The disk cache has no TTL and no size cap. Delete `data/cache` to refresh.
 - Retries cover 429, 500, 502, 503, 504, and connection failures. Other HTTP
   statuses are returned to the caller.

@@ -40,8 +40,8 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from starlette.responses import Response as StarletteResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.responses import Response as StarletteResponse
 
 from claimforge import __version__
 from claimforge.eval import (

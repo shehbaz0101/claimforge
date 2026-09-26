@@ -1,0 +1,157 @@
+{
+  "fixture": "tests/fixtures/gold_claims.json",
+  "judge": "rubric",
+  "n": 13,
+  "correct": 13,
+  "accuracy": 1.0,
+  "agreement_rate": 1.0,
+  "macro_f1": 1.0,
+  "min_accuracy": 1.0,
+  "meets_threshold": true,
+  "per_label": {
+    "support": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "gold": 4,
+      "predicted": 4
+    },
+    "refute": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "gold": 3,
+      "predicted": 3
+    },
+    "insufficient": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "gold": 6,
+      "predicted": 6
+    }
+  },
+  "confusion": {
+    "support": {
+      "support": 4,
+      "refute": 0,
+      "insufficient": 0
+    },
+    "refute": {
+      "support": 0,
+      "refute": 3,
+      "insufficient": 0
+    },
+    "insufficient": {
+      "support": 0,
+      "refute": 0,
+      "insufficient": 6
+    }
+  },
+  "items": [
+    {
+      "id": "gold_support_burgers",
+      "claim_id": "clm_burgers",
+      "expected": "support",
+      "predicted": "support",
+      "match": true,
+      "confidence": 0.9
+    },
+    {
+      "id": "gold_support_metformin",
+      "claim_id": "clm_metformin",
+      "expected": "support",
+      "predicted": "support",
+      "match": true,
+      "confidence": 0.925
+    },
+    {
+      "id": "gold_support_mrna",
+      "claim_id": "clm_mrna",
+      "expected": "support",
+      "predicted": "support",
+      "match": true,
+      "confidence": 0.9125
+    },
+    {
+      "id": "gold_support_statins_same_catalog",
+      "claim_id": "clm_statins",
+      "expected": "support",
+      "predicted": "support",
+      "match": true,
+      "confidence": 0.825
+    },
+    {
+      "id": "gold_refute_aspirin",
+      "claim_id": "clm_aspirin",
+      "expected": "refute",
+      "predicted": "refute",
+      "match": true,
+      "confidence": 0.8425
+    },
+    {
+      "id": "gold_refute_burgers_opposite",
+      "claim_id": "clm_burgers_opposite",
+      "expected": "refute",
+      "predicted": "refute",
+      "match": true,
+      "confidence": 0.79
+    },
+    {
+      "id": "gold_refute_vitamin_d",
+      "claim_id": "clm_vitamin_d",
+      "expected": "refute",
+      "predicted": "refute",
+      "match": true,
+      "confidence": 0.772
+    },
+    {
+      "id": "gold_insufficient_empty",
+      "claim_id": "clm_crispr_empty",
+      "expected": "insufficient",
+      "predicted": "insufficient",
+      "match": true,
+      "confidence": 0.8
+    },
+    {
+      "id": "gold_insufficient_unrelated",
+      "claim_id": "clm_graphs",
+      "expected": "insufficient",
+      "predicted": "insufficient",
+      "match": true,
+      "confidence": 0.4062
+    },
+    {
+      "id": "gold_insufficient_low_coverage",
+      "claim_id": "clm_lithium",
+      "expected": "insufficient",
+      "predicted": "insufficient",
+      "match": true,
+      "confidence": 0.35
+    },
+    {
+      "id": "gold_insufficient_mixed",
+      "claim_id": "clm_exercise",
+      "expected": "insufficient",
+      "predicted": "insufficient",
+      "match": true,
+      "confidence": 0.44
+    },
+    {
+      "id": "gold_insufficient_weak_refute",
+      "claim_id": "clm_probiotics",
+      "expected": "insufficient",
+      "predicted": "insufficient",
+      "match": true,
+      "confidence": 0.35
+    },
+    {
+      "id": "gold_insufficient_below_support_bar",
+      "claim_id": "clm_sglt2",
+      "expected": "insufficient",
+      "predicted": "insufficient",
+      "match": true,
+      "confidence": 0.35
+    }
+  ]
+}

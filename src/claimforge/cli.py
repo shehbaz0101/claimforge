@@ -6,6 +6,9 @@
 re-scores the pack with the active ranker, and prints evidence as JSON.
 The ranker name is written to stderr. Scores on stdout are that ranker's
 cosine similarity.
+``verify`` runs that retrieval and then the judge, and prints a verdict.
+``judge`` scores a claim against a saved evidence file and does not use
+the network.
 """
 
 from __future__ import annotations
@@ -21,7 +24,8 @@ from pydantic import ValidationError
 from claimforge import __version__
 from claimforge.extract import extract_from_openalex_work
 from claimforge.http_cache import CachedHttpClient, ClaimForgeError
-from claimforge.models import Claim, dump_claims, dump_evidence
+from claimforge.judge import claim_from_text, judge_claim
+from claimforge.models import Claim, Evidence, Verdict, dump_claims, dump_evidence, dump_verdicts
 from claimforge.openalex import (
     DEFAULT_PER_PAGE,
     DEFAULT_QUERY,
@@ -93,6 +97,62 @@ def build_parser() -> argparse.ArgumentParser:
             "installed, otherwise TF-IDF cosine (default: auto)"
         ),
     )
+
+    verify = subparsers.add_parser(
+        "verify",
+        help="Retrieve evidence for a claim and print a verdict as JSON",
+    )
+    verify_source = verify.add_mutually_exclusive_group(required=True)
+    verify_source.add_argument("--text", help="claim text to retrieve and judge")
+    verify_source.add_argument(
+        "--claim-json",
+        type=Path,
+        help="path to one Claim JSON object or a list of claims",
+    )
+    verify.add_argument(
+        "--top-k",
+        type=int,
+        default=DEFAULT_TOP_K,
+        help=f"evidence records to keep after dedupe, 1-25 (default: {DEFAULT_TOP_K})",
+    )
+    verify.add_argument(
+        "--per-source",
+        type=int,
+        default=DEFAULT_PER_SOURCE,
+        help=f"records to request from each catalog, 1-25 (default: {DEFAULT_PER_SOURCE})",
+    )
+    verify.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=DEFAULT_CACHE_DIR,
+        help=f"disk cache directory (default: {DEFAULT_CACHE_DIR})",
+    )
+    verify.add_argument(
+        "--ranker",
+        choices=("auto", "lexical", "embeddings"),
+        default="auto",
+        help=(
+            "auto uses a local embedding model when sentence-transformers is "
+            "installed, otherwise TF-IDF cosine (default: auto)"
+        ),
+    )
+
+    judge = subparsers.add_parser(
+        "judge",
+        help="Score a saved claim and evidence pack and print a verdict as JSON",
+    )
+    judge.add_argument(
+        "--claim-json",
+        type=Path,
+        required=True,
+        help="path to one Claim JSON object or a list of claims",
+    )
+    judge.add_argument(
+        "--evidence-json",
+        type=Path,
+        required=True,
+        help="evidence list, one evidence object, or packs paired by claim_id",
+    )
     return parser
 
 
@@ -125,6 +185,10 @@ def main(argv: list[str] | None = None) -> int:
         return _extract_claims(parser, args)
     if args.command == "retrieve-evidence":
         return _retrieve_evidence(parser, args)
+    if args.command == "verify":
+        return _verify(parser, args)
+    if args.command == "judge":
+        return _judge(parser, args)
     parser.error(f"unknown command {args.command}")
     return 2
 
@@ -221,6 +285,68 @@ def _retrieve_evidence(parser: argparse.ArgumentParser, args: argparse.Namespace
     return 0
 
 
+def _verify(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    if args.top_k < 1 or args.top_k > 25:
+        parser.error("--top-k must be between 1 and 25")
+    if args.per_source < 1 or args.per_source > 25:
+        parser.error("--per-source must be between 1 and 25")
+    mailto = os.environ.get("CLAIMFORGE_OPENALEX_MAILTO", "").strip() or None
+    s2_api_key = os.environ.get("CLAIMFORGE_S2_API_KEY", "").strip() or None
+    try:
+        claims = _verify_claims(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    client = CachedHttpClient(cache_dir=args.cache_dir)
+    verdicts: list[Verdict] = []
+    for claim in claims:
+        try:
+            evidence = retrieve_evidence(
+                client,
+                claim,
+                per_source=args.per_source,
+                top_k=args.top_k,
+                mailto=mailto,
+                s2_api_key=s2_api_key,
+                ranker=args.ranker,
+                embedding_cache_dir=args.cache_dir / "embeddings",
+            )
+        except ClaimForgeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        verdicts.append(judge_claim(claim, evidence))
+    print(f"ranker: {active_ranker_name(args.ranker)}", file=sys.stderr)
+    _print_verdicts(verdicts)
+    return 0
+
+
+def _judge(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    try:
+        claims = _load_claims(args.claim_json)
+        packs = _load_evidence_packs(args.evidence_json, claims)
+    except ValueError as exc:
+        parser.error(str(exc))
+    verdicts = [judge_claim(claim, evidence) for claim, evidence in zip(claims, packs, strict=True)]
+    _print_verdicts(verdicts)
+    return 0
+
+
+def _verify_claims(args: argparse.Namespace) -> list[Claim]:
+    """Claims to verify. ``--text`` becomes one synthetic claim."""
+
+    if args.text is not None:
+        if not str(args.text).strip():
+            raise ValueError("--text must not be empty")
+        return [claim_from_text(str(args.text))]
+    return _load_claims(args.claim_json)
+
+
+def _print_verdicts(verdicts: list[Verdict]) -> None:
+    if len(verdicts) == 1:
+        print(json.dumps(verdicts[0].to_json_dict(), indent=2, ensure_ascii=False))
+        return
+    print(json.dumps(dump_verdicts(verdicts), indent=2, ensure_ascii=False))
+
+
 def _retrieval_targets(args: argparse.Namespace) -> list[Claim | None]:
     """Return claims from ``--claim-json``, or ``[None]`` when ``--text`` is set."""
 
@@ -253,3 +379,70 @@ def _load_claims(path: Path) -> list[Claim]:
         except ValidationError as exc:
             raise ValueError(f"invalid claim: {exc}") from exc
     return claims
+
+
+def _load_evidence_packs(path: Path, claims: list[Claim]) -> list[list[Evidence]]:
+    """Read evidence for ``claims``.
+
+    A bare list or one evidence object is the pack for a single claim.
+    Several claims need a ``claim_id`` to list map, or a list of
+    ``{"claim_id", "evidence"}`` objects.
+    """
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"could not read evidence JSON: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"evidence JSON is not valid JSON: {exc}") from exc
+
+    if isinstance(payload, dict) and _is_evidence_object(payload):
+        if len(claims) != 1:
+            raise ValueError("a single evidence object requires one claim")
+        return [[_validate_evidence(payload)]]
+    if isinstance(payload, dict):
+        return [_pack_from_map(payload, claim) for claim in claims]
+    if isinstance(payload, list):
+        if payload and all(_is_paired_pack(item) for item in payload):
+            by_id = {str(item["claim_id"]): item["evidence"] for item in payload}
+            return [_validate_evidence_list(by_id.get(claim.id), claim.id) for claim in claims]
+        if len(claims) != 1:
+            raise ValueError(
+                "a bare evidence list requires one claim; pair each pack with claim_id"
+            )
+        return [_validate_evidence_list(payload, claims[0].id)]
+    raise ValueError(
+        "evidence JSON must be an evidence list, one evidence object, or claim_id packs"
+    )
+
+
+def _is_evidence_object(item: object) -> bool:
+    return isinstance(item, dict) and "source" in item and "url" in item and "id" in item
+
+
+def _is_paired_pack(item: object) -> bool:
+    return (
+        isinstance(item, dict)
+        and "claim_id" in item
+        and "evidence" in item
+        and "source" not in item
+    )
+
+
+def _pack_from_map(payload: dict[str, object], claim: Claim) -> list[Evidence]:
+    if claim.id not in payload:
+        raise ValueError(f"no evidence for claim {claim.id}")
+    return _validate_evidence_list(payload[claim.id], claim.id)
+
+
+def _validate_evidence_list(raw: object, claim_id: str) -> list[Evidence]:
+    if not isinstance(raw, list):
+        raise ValueError(f"evidence for {claim_id} must be a list")
+    return [_validate_evidence(item) for item in raw]
+
+
+def _validate_evidence(item: object) -> Evidence:
+    try:
+        return Evidence.model_validate(item)
+    except ValidationError as exc:
+        raise ValueError(f"invalid evidence: {exc}") from exc

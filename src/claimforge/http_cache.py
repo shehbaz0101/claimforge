@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import random
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -18,6 +19,8 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from claimforge.settings import http_min_interval_s, offline_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,10 @@ class HttpRequestError(ClaimForgeError):
         super().__init__(message)
         self.status_code = status_code
         self.url = url
+
+
+class OfflineCacheMiss(ClaimForgeError):
+    """Offline mode has no cached body for this URL. The network is not used."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +165,70 @@ def _header(headers: Mapping[str, str], name: str) -> str | None:
     return None
 
 
+class HostIntervalLimiter:
+    """Keep outbound GETs to one host at least ``interval`` seconds apart.
+
+    Cache reads do not call :meth:`wait`. The wait is measured with a
+    monotonic clock. One shared limiter covers every client in the process
+    so ``claimforge serve`` paces catalog hosts across requests.
+    ``CLAIMFORGE_HTTP_MIN_INTERVAL_S`` sets that shared interval. ``0``
+    (the default) does not sleep.
+    """
+
+    def __init__(
+        self,
+        interval: float,
+        *,
+        clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
+        if interval < 0:
+            raise ValueError("interval must be >= 0")
+        self.interval = interval
+        self._clock = clock if clock is not None else time.monotonic
+        self._sleep = sleep if sleep is not None else time.sleep
+        self._next_at: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def wait(self, host: str) -> None:
+        """Sleep until ``host`` may be contacted again. Reserve the next slot."""
+
+        if self.interval <= 0 or not host:
+            return
+        with self._lock:
+            now = self._clock()
+            earliest = self._next_at.get(host, now)
+            delay = max(0.0, earliest - now)
+            self._next_at[host] = max(now, earliest) + self.interval
+        if delay > 0:
+            self._sleep(delay)
+
+    def reset(self) -> None:
+        """Forget host timestamps. Tests use this between cases."""
+
+        with self._lock:
+            self._next_at.clear()
+
+
+_shared_limiter = HostIntervalLimiter(0.0)
+_shared_limiter_lock = threading.Lock()
+
+
+def shared_host_interval_limiter() -> HostIntervalLimiter:
+    """Process limiter. The interval is refreshed from the environment."""
+
+    with _shared_limiter_lock:
+        _shared_limiter.interval = http_min_interval_s()
+        return _shared_limiter
+
+
+def reset_shared_host_interval_limiter() -> None:
+    """Clear shared host timestamps and apply the current environment interval."""
+
+    limiter = shared_host_interval_limiter()
+    limiter.reset()
+
+
 class CachedHttpClient:
     """GET a URL, retry transient failures, and store 2xx bodies on disk.
 
@@ -165,6 +236,15 @@ class CachedHttpClient:
     successful responses are stored. 429 and transient 5xx responses are
     retried. A ``Retry-After`` header replaces exponential backoff when it
     parses; the wait is still capped by ``max_retry_after``.
+
+    Outbound GETs to the same host wait ``min_interval`` seconds when that
+    value is greater than zero. The default client uses the process limiter
+    and ``CLAIMFORGE_HTTP_MIN_INTERVAL_S`` (unset means no extra delay).
+    A cached hit does not wait and does not contact the host.
+
+    When ``offline`` is true, or when offline mode is on at construction,
+    a cache miss raises :class:`OfflineCacheMiss` and does not call the
+    transport.
     """
 
     def __init__(
@@ -182,11 +262,17 @@ class CachedHttpClient:
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], datetime] | None = None,
         rng: Callable[[], float] | None = None,
+        min_interval: float | None = None,
+        limiter: HostIntervalLimiter | None = None,
+        clock: Callable[[], float] | None = None,
+        offline: bool | None = None,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be >= 0")
         if backoff_base < 0 or backoff_max < 0 or jitter < 0 or max_retry_after < 0:
             raise ValueError("backoff settings must be >= 0")
+        if min_interval is not None and min_interval < 0:
+            raise ValueError("min_interval must be >= 0")
         self.cache_dir = Path(cache_dir)
         self.timeout = timeout
         self.max_retries = max_retries
@@ -199,6 +285,18 @@ class CachedHttpClient:
         self._sleep = sleep
         self._now = now if now is not None else _utcnow
         self._rng = rng if rng is not None else random.random
+        self._clock = clock if clock is not None else time.monotonic
+        self.offline = offline_enabled() if offline is None else offline
+        if limiter is not None:
+            self._limiter = limiter
+        elif min_interval is not None:
+            self._limiter = HostIntervalLimiter(
+                min_interval,
+                clock=self._clock,
+                sleep=self._sleep,
+            )
+        else:
+            self._limiter = shared_host_interval_limiter()
 
     def get(
         self,
@@ -215,6 +313,10 @@ class CachedHttpClient:
             cached = self._read_cache(key, canonical)
             if cached is not None:
                 return cached
+        if self.offline:
+            raise OfflineCacheMiss(
+                f"offline mode has no cached response for {canonical}"
+            )
 
         request_headers = {
             "User-Agent": self.user_agent,
@@ -223,9 +325,11 @@ class CachedHttpClient:
         if headers:
             request_headers.update(headers)
 
+        host = urlsplit(canonical).netloc
         last_network_error: TransientNetworkError | None = None
         for attempt in range(self.max_retries + 1):
             try:
+                self._limiter.wait(host)
                 fetched = self.transport.get(request_url, request_headers, self.timeout)
             except TransientNetworkError as exc:
                 last_network_error = exc

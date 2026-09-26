@@ -17,6 +17,7 @@ from claimforge.http_cache import (
     CachedHttpClient,
     CachedResponse,
     HttpRequestError,
+    OfflineCacheMiss,
     TransientNetworkError,
     TransportResponse,
     UrllibTransport,
@@ -303,6 +304,59 @@ def test_urllib_transport_closed_port_is_transient() -> None:
     transport = UrllibTransport()
     with pytest.raises(TransientNetworkError):
         transport.get(f"http://127.0.0.1:{port}/", {}, 2)
+
+
+def test_min_interval_spaces_repeat_calls_to_one_host(tmp_path: Path) -> None:
+    transport = ScriptedTransport(
+        [
+            _response(200, b"one"),
+            _response(200, b"two"),
+            _response(200, b"three"),
+        ]
+    )
+    client = _client(tmp_path, transport, min_interval=0.5, clock=lambda: 10.0)
+
+    assert client.get("https://api.openalex.org/works?q=1").body == b"one"
+    assert client.get("https://export.arxiv.org/api/query?q=1").body == b"two"
+    assert client.get("https://api.openalex.org/works?q=2").body == b"three"
+
+    assert client.slept == [0.5]  # type: ignore[attr-defined]
+    assert len(transport.calls) == 3
+
+
+def test_cache_hit_does_not_wait_for_the_host_interval(tmp_path: Path) -> None:
+    transport = ScriptedTransport([_response(200, b"cached")])
+    client = _client(tmp_path, transport, min_interval=2.0, clock=lambda: 10.0)
+
+    assert client.get("https://example.com/item").body == b"cached"
+    assert client.get("https://example.com/item").from_cache is True
+
+    assert client.slept == []  # type: ignore[attr-defined]
+    assert len(transport.calls) == 1
+
+
+def test_offline_cache_miss_does_not_call_the_transport(tmp_path: Path) -> None:
+    transport = ScriptedTransport([_response(200, b"live")])
+    client = _client(tmp_path, transport, offline=True)
+
+    with pytest.raises(OfflineCacheMiss):
+        client.get("https://example.com/missing")
+
+    assert transport.calls == []
+    assert list(tmp_path.glob("*.json")) == []
+
+
+def test_offline_cache_hit_does_not_call_the_transport(tmp_path: Path) -> None:
+    warm = ScriptedTransport([_response(200, b"from-disk")])
+    _client(tmp_path, warm, offline=False).get("https://example.com/item")
+    cold = ScriptedTransport([_response(200, b"should-not-run")])
+    client = _client(tmp_path, cold, offline=True)
+
+    response = client.get("https://example.com/item")
+
+    assert response.from_cache is True
+    assert response.body == b"from-disk"
+    assert cold.calls == []
 
 
 def test_cached_response_text() -> None:

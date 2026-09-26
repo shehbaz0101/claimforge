@@ -1,8 +1,11 @@
 """Semantic Scholar Graph API paper search.
 
 Unauthenticated calls are the default. ``CLAIMFORGE_S2_API_KEY`` is optional
-and is never required. HTTP 401, 403, and 429 are soft failures: the search
-returns an empty list so a rate limit cannot fail CI or drop the other sources.
+and is never required. HTTP 401 and 403 are a ``rejected`` soft failure.
+HTTP 429 is a ``rate_limited`` soft failure. Both return an empty list so
+one catalog cannot fail CI or drop the other sources. Other HTTP errors and
+network errors still propagate. The retriever classifies those as
+``unavailable`` or ``invalid_response`` and keeps the catalogs that answered.
 """
 
 from __future__ import annotations
@@ -66,8 +69,9 @@ def search_semantic_scholar(
 ) -> list[Evidence]:
     """Search Semantic Scholar.
 
-    A missing key sends no credential header. 401, 403, and 429 return an
-    empty list. Other HTTP failures still raise so the caller can record them.
+    A missing key sends no credential header. 401 and 403 (``rejected``) and
+    429 (``rate_limited``) return an empty list. Other HTTP failures still
+    raise so the caller can record them.
     """
 
     url = build_semantic_scholar_search_url(text, limit=limit)
@@ -80,13 +84,18 @@ def search_semantic_scholar(
     except HttpRequestError as exc:
         if exc.status_code in _SOFT_STATUS:
             logger.warning(
-                "Semantic Scholar search skipped after HTTP %s",
+                "Semantic Scholar search soft-fail (%s): HTTP %s",
+                _soft_kind(exc.status_code),
                 exc.status_code,
             )
             return []
         raise
     if response.status_code in _SOFT_STATUS:
-        logger.warning("Semantic Scholar search skipped: HTTP %s", response.status_code)
+        logger.warning(
+            "Semantic Scholar search soft-fail (%s): HTTP %s",
+            _soft_kind(response.status_code),
+            response.status_code,
+        )
         return []
     if response.status_code != 200:
         snippet = response.body[:200].decode("utf-8", errors="replace")
@@ -94,6 +103,14 @@ def search_semantic_scholar(
             f"Semantic Scholar search returned HTTP {response.status_code}: {snippet}"
         )
     return parse_semantic_scholar_payload(response.body)
+
+
+def _soft_kind(status: int) -> str:
+    """``rate_limited`` for 429. ``rejected`` for 401 and 403."""
+
+    if status == 429:
+        return "rate_limited"
+    return "rejected"
 
 
 def parse_semantic_scholar_payload(body: bytes) -> list[Evidence]:

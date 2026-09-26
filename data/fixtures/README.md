@@ -3,6 +3,7 @@
 The gold claim set lives at `tests/fixtures/gold_claims.json`.
 
 `claimforge eval --fixture tests/fixtures/gold_claims.json` reads that file.
+`--fixture` also accepts this directory, or several JSON files, as one batch.
 Each item includes the claim and an inline evidence pack. Passages are
 synthetic. Eval does not fetch OpenAlex, arXiv, or Semantic Scholar, and it
 does not call a model. CI does not need a network connection or an API key.

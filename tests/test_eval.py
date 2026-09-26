@@ -285,6 +285,7 @@ def test_eval_cli_prints_json_and_a_table(capsys: pytest.CaptureFixture[str]) ->
     assert payload["meets_threshold"] is True
     assert payload["min_accuracy"] == 1.0
     assert payload["judge"] == "rubric"
+    assert payload["fixture"] == str(FIXTURE)
     assert {row["id"] for row in payload["items"]} >= set(KNOWN_LABELS)
     assert "accuracy: 1.0000" in captured.err
     assert "agreement: 1.0000" in captured.err
@@ -362,6 +363,59 @@ def test_eval_cli_rejects_bad_arguments(argv: list[str], tmp_path: Path) -> None
     with pytest.raises(SystemExit) as caught:
         main(argv)
     assert caught.value.code == 2
+
+
+def test_eval_cli_scores_a_directory_and_several_files(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    raw = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    items = raw["items"]
+    assert isinstance(items, list)
+    left = tmp_path / "b_left.json"
+    right = tmp_path / "a_right.json"
+    left.write_text(json.dumps({"name": "left", "items": items[:6]}), encoding="utf-8")
+    right.write_text(json.dumps({"name": "right", "items": items[6:]}), encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("not a fixture", encoding="utf-8")
+
+    assert main(["eval", "--fixture", str(tmp_path), "--format", "json"]) == 0
+    directory = json.loads(capsys.readouterr().out)
+    assert directory["n"] == len(items)
+    assert directory["accuracy"] == 1.0
+    assert directory["fixture"] == str(tmp_path)
+    assert directory["judge"] == "rubric"
+
+    assert main(["eval", "--fixture", str(left), str(right), "--format", "json"]) == 0
+    several = json.loads(capsys.readouterr().out)
+    assert several["n"] == len(items)
+    assert several["accuracy"] == 1.0
+    assert several["fixture"] == f"{left}, {right}"
+
+    assert main(["eval", "--fixture", str(left), "--fixture", str(right), "--format", "json"]) == 0
+    repeated = json.loads(capsys.readouterr().out)
+    assert repeated["n"] == len(items)
+    assert repeated["accuracy"] == 1.0
+    assert [row["id"] for row in repeated["items"]] == [row["id"] for row in several["items"]]
+
+
+def test_eval_cli_rejects_an_empty_directory_and_duplicate_ids(tmp_path: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "readme.txt").write_text("no json", encoding="utf-8")
+    with pytest.raises(SystemExit) as missing_json:
+        main(["eval", "--fixture", str(empty)])
+    assert missing_json.value.code == 2
+
+    raw = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    items = raw["items"]
+    assert isinstance(items, list)
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "a.json").write_text(json.dumps({"items": [items[0]]}), encoding="utf-8")
+    (batch / "b.json").write_text(json.dumps({"items": [items[0]]}), encoding="utf-8")
+    with pytest.raises(SystemExit) as duplicate:
+        main(["eval", "--fixture", str(batch), "--format", "json"])
+    assert duplicate.value.code == 2
 
 
 def test_eval_cli_rejects_a_bad_fixture(tmp_path: Path) -> None:

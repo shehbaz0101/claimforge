@@ -19,10 +19,18 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Typing :: Typed",
 ]
-dependencies = ["pydantic>=2.6,<3"]
+dependencies = [
+    "pydantic>=2.6,<3",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.32,<1",
+]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3"]
+dev = [
+    "pytest>=8.3",
+    # TestClient follows Starlette and imports httpx2 when it is installed.
+    "httpx2>=2.0",
+]
 # Local embedding ranker. CI does not install this extra: the default path
 # ranks with TF-IDF cosine and stays offline.
 embeddings = ["sentence-transformers>=3.0"]

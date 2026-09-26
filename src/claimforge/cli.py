@@ -9,9 +9,12 @@ cosine similarity.
 ``verify`` runs that retrieval and then the judge, and prints a verdict.
 ``judge`` scores a claim against a saved evidence file and does not use
 the network.
-``eval`` scores a gold fixture with the rubric and prints accuracy,
-per-label F1, and agreement. It does not use the network. Exit code 0
-unless ``--strict`` and accuracy is below ``--min-accuracy``.
+``eval`` scores gold fixtures with the rubric and prints accuracy,
+per-label F1, and agreement. ``--fixture`` takes one JSON file, several
+files, or a directory of JSON fixtures. It does not use the network.
+Exit code 0 unless ``--strict`` and accuracy is below ``--min-accuracy``.
+``serve`` runs the HTTP API (``GET /health``, ``POST /verify``,
+``POST /judge``, ``POST /eval``). The same app is ``uvicorn claimforge.api:app``.
 """
 
 from __future__ import annotations
@@ -28,9 +31,10 @@ from claimforge import __version__
 from claimforge.eval import (
     DEFAULT_MIN_ACCURACY,
     GoldFixtureError,
+    describe_fixtures,
     evaluate_gold,
     format_eval_table,
-    load_gold_fixture,
+    load_gold_fixtures,
     parse_min_accuracy,
 )
 from claimforge.extract import extract_from_openalex_work
@@ -167,13 +171,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     evaluate = subparsers.add_parser(
         "eval",
-        help="Score a gold fixture with the rubric and print agreement metrics",
+        help="Score gold fixtures with the rubric and print agreement metrics",
     )
     evaluate.add_argument(
         "--fixture",
         type=Path,
+        nargs="+",
+        action=_CollectPaths,
         required=True,
-        help="gold claims JSON, for example tests/fixtures/gold_claims.json",
+        metavar="PATH",
+        help=(
+            "gold claims JSON file, several files, or a directory of JSON fixtures "
+            "(example: tests/fixtures/gold_claims.json)"
+        ),
     )
     evaluate.add_argument(
         "--format",
@@ -196,7 +206,46 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="exit 1 when accuracy is below --min-accuracy; otherwise exit 0",
     )
+
+    serve = subparsers.add_parser(
+        "serve",
+        help="Run the HTTP API (health, verify, judge, eval)",
+    )
+    serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="bind address (default: 127.0.0.1)",
+    )
+    serve.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="bind port (default: 8000)",
+    )
+    serve.add_argument(
+        "--reload",
+        action="store_true",
+        help="reload when source files change",
+    )
     return parser
+
+
+class _CollectPaths(argparse.Action):
+    """Append every path from one or more ``--fixture`` flags."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        current = list(getattr(namespace, self.dest) or [])
+        if isinstance(values, list):
+            current.extend(values)
+        else:
+            current.append(values)
+        setattr(namespace, self.dest, current)
 
 
 def _add_search_arguments(parser: argparse.ArgumentParser) -> None:
@@ -234,6 +283,8 @@ def main(argv: list[str] | None = None) -> int:
         return _judge(parser, args)
     if args.command == "eval":
         return _eval(parser, args)
+    if args.command == "serve":
+        return _serve(parser, args)
     parser.error(f"unknown command {args.command}")
     return 2
 
@@ -378,12 +429,12 @@ def _judge(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
 def _eval(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     try:
         minimum = parse_min_accuracy(args.min_accuracy)
-        items = load_gold_fixture(args.fixture)
+        items = load_gold_fixtures(args.fixture)
     except GoldFixtureError as exc:
         parser.error(str(exc))
     report = evaluate_gold(
         items,
-        fixture=str(args.fixture),
+        fixture=describe_fixtures(args.fixture),
         min_accuracy=minimum,
     )
     table = format_eval_table(report)
@@ -399,6 +450,29 @@ def _eval(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    return 0
+
+
+def _serve(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    host = str(args.host).strip()
+    if not host:
+        parser.error("--host must not be empty")
+    if args.port < 1 or args.port > 65535:
+        parser.error("--port must be between 1 and 65535")
+    try:
+        import uvicorn
+    except ImportError:
+        print(
+            "error: uvicorn is not installed. Reinstall ClaimForge to run the API.",
+            file=sys.stderr,
+        )
+        return 1
+    uvicorn.run(
+        "claimforge.api:app",
+        host=host,
+        port=args.port,
+        reload=bool(args.reload),
+    )
     return 0
 
 

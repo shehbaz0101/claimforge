@@ -23,6 +23,9 @@ dependencies = ["pydantic>=2.6,<3"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3"]
+# Local embedding ranker. CI does not install this extra: the default path
+# ranks with TF-IDF cosine and stays offline.
+embeddings = ["sentence-transformers>=3.0"]
 
 [project.urls]
 Homepage = "https://github.com/shehbaz0101/claimforge"

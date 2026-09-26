@@ -26,7 +26,13 @@ def test_live_retrieve_evidence_returns_a_pack(tmp_path: Path) -> None:
         jitter=0.0,
     )
     try:
-        evidence = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5)
+        evidence = retrieve_evidence(
+            client,
+            CLAIM_TEXT,
+            per_source=2,
+            top_k=5,
+            ranker="lexical",
+        )
     except TransientNetworkError as exc:
         pytest.skip(f"literature provider unreachable: {exc}")
     except HttpRequestError as exc:

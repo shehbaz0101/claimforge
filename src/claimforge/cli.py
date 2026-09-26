@@ -2,8 +2,10 @@
 
 ``smoke-openalex`` prints work titles and ids.
 ``extract-claims`` fetches a few works and prints claims as JSON.
-``retrieve-evidence`` searches OpenAlex, arXiv, and Semantic Scholar and
-prints an evidence pack as JSON.
+``retrieve-evidence`` searches OpenAlex, arXiv, and Semantic Scholar,
+re-scores the pack with the active ranker, and prints evidence as JSON.
+The ranker name is written to stderr. Scores on stdout are that ranker's
+cosine similarity.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from claimforge.openalex import (
     search_work_records,
     search_works,
 )
+from claimforge.rank import active_ranker_name
 from claimforge.retrieve import DEFAULT_PER_SOURCE, DEFAULT_TOP_K, retrieve_evidence
 
 DEFAULT_CACHE_DIR = Path("data/cache")
@@ -80,6 +83,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_CACHE_DIR,
         help=f"disk cache directory (default: {DEFAULT_CACHE_DIR})",
+    )
+    retrieve.add_argument(
+        "--ranker",
+        choices=("auto", "lexical", "embeddings"),
+        default="auto",
+        help=(
+            "auto uses a local embedding model when sentence-transformers is "
+            "installed, otherwise TF-IDF cosine (default: auto)"
+        ),
     )
     return parser
 
@@ -189,11 +201,14 @@ def _retrieve_evidence(parser: argparse.ArgumentParser, args: argparse.Namespace
                 top_k=args.top_k,
                 mailto=mailto,
                 s2_api_key=s2_api_key,
+                ranker=args.ranker,
+                embedding_cache_dir=args.cache_dir / "embeddings",
             )
         except ClaimForgeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         packs.append((claim, dump_evidence(evidence)))
+    print(f"ranker: {active_ranker_name(args.ranker)}", file=sys.stderr)
     if len(packs) == 1:
         print(json.dumps(packs[0][1], indent=2, ensure_ascii=False))
         return 0

@@ -3,8 +3,9 @@
 ClaimForge will check a scientific claim against the literature and record an
 LLM judge's verdict. Day 1 shipped the project skeleton and a cached OpenAlex
 client. Day 2 adds the claim schema and an abstract extractor. Day 3 retrieves
-an evidence pack from OpenAlex, arXiv, and Semantic Scholar. Ranking is still
-lexical overlap. Embeddings and the judge are not built yet.
+an evidence pack from OpenAlex, arXiv, and Semantic Scholar. Day 4 re-scores
+that pack with a local embedding model when it is installed, and with TF-IDF
+cosine otherwise, then keeps the top matches. The judge is not built yet.
 
 ## Pipeline
 
@@ -20,18 +21,19 @@ flowchart LR
   arxiv --> cache
   s2 --> cache
   retrieve --> evidence[Evidence pack]
+  evidence --> rank[Rank top-k]
   claims --> judge[LLM judge]
-  evidence --> judge
+  rank --> judge
   judge --> verdict[Support, refute, or insufficient]
 ```
 
 | Stage | State | Role |
 | --- | --- | --- |
 | Claim extract | Shipped (Day 2) | Turn an abstract into atomic claims with a stable schema. |
-| Retrieve | Shipped (Day 3) | Query OpenAlex, arXiv, and Semantic Scholar. Deduplicate and keep the top matches. |
-| Rank | Planned (Day 4) | Replace lexical overlap with an embedding ranker. Not built. |
+| Retrieve | Shipped (Day 3) | Query OpenAlex, arXiv, and Semantic Scholar. Deduplicate catalog copies. |
+| Rank | Shipped (Day 4) | Re-score the pack with embedding cosine or TF-IDF cosine and keep top-k. |
 | HTTP disk cache | Shipped (Day 1) | Cache GET responses under `data/cache` and retry 429 / transient 5xx. |
-| LLM judge | Planned | Score a claim against retrieved evidence. No judge is called. |
+| LLM judge | Planned (Day 5) | Rubric and verdict engine. No judge is called. |
 
 ## HTTP cache
 
@@ -120,9 +122,9 @@ ignored). Identifiers are copied onto one record. OpenAlex wins the `source`
 and `url` when it is one of the copies, and the longer abstract is kept. A
 shared title merges only when one copy has no DOI, arXiv id, or work id.
 
-`score` is lexical overlap of the claim with the title and snippet, in
-`[0, 1]`. Title matches count more than snippet matches. Day 4 replaces this
-with an embedding ranker. The retriever does not fetch full text.
+`score` is cosine similarity from the active ranker, clipped to `[0, 1]`.
+Negative cosine values are stored as 0. The retriever does not fetch full text.
+Day 3 term overlap (`lexical_score`) is no longer the pack score.
 
 ## Evidence schema
 
@@ -139,20 +141,46 @@ rejected.
 | `doi` | no | Bare DOI, without a `https://doi.org/` prefix. |
 | `arxiv_id` | no | arXiv id without a version suffix. |
 | `url` | yes | Catalog URL for the preferred source. |
-| `score` | no | Finite float `>= 0`, or null before ranking. |
+| `score` | no | Cosine similarity in `[0, 1]` after ranking, or null before it. |
 
 `claimforge retrieve-evidence --text "..."` prints a JSON array of evidence.
 `--claim-json path` reads one claim object, or a list such as `extract-claims`
 output. One claim prints the same array. Several claims print
 `{"claim_id", "evidence"}` objects. `--top-k` and `--per-source` default to 8
-and must be from 1 to 25.
+and must be from 1 to 25. `--ranker` is `auto` (default), `lexical`, or
+`embeddings`. Stdout is the JSON pack, including each record's `score`.
+Stderr is one line, `ranker: lexical` or `ranker: embeddings`.
+
+arXiv requests send `User-Agent: ClaimForge/0.1 (mailto:github.com/shehbaz0101/claimforge)`
+and `Accept: application/atom+xml`. A 406 or other arXiv failure is still a
+soft failure: the other catalogs are returned.
+
+## Evidence ranking
+
+`claimforge.rank` re-scores the deduplicated pack and `pack_top_k` keeps the
+highest scores for the future judge. Ties break toward OpenAlex, then
+Semantic Scholar, then arXiv.
+
+| Ranker | When | Score |
+| --- | --- | --- |
+| `embeddings` | `pip install -e ".[embeddings]"`, or `--ranker embeddings` | Cosine similarity of a local sentence-transformers model. Default model `all-MiniLM-L6-v2`. Override with `CLAIMFORGE_EMBEDDING_MODEL`. |
+| `lexical` | Default in CI, and `--ranker lexical` | TF-IDF cosine over the candidate pack. Title tokens are repeated so a title hit outweighs a snippet hit. No extra dependency and no network. |
+| `auto` | `retrieve_evidence` and the CLI default | Embeddings when `sentence-transformers` imports, otherwise lexical. The model is not imported on the lexical path. |
+
+Embedding vectors are JSON files under `data/cache/embeddings/<model>/`.
+The file name is the SHA-256 of the model name and the text. A corrupt file
+is ignored and encoded again. The cache is gitignored with the rest of
+`data/cache`. CI installs `.[dev]` only, so unit tests stay on the lexical
+ranker and do not download a model.
+
+`--ranker embeddings` fails before any catalog request when the extra is
+missing. `retrieve_evidence(..., ranker="lexical")` forces the offline path.
 
 ## Planned components
 
 These names describe later days. They have no modules yet.
 
-- **Ranking (Day 4).** An embedding ranker over the evidence pack. The Day 3
-  score is only lexical overlap.
+- **Judge (Day 5).** A rubric and verdict engine. The judge reads the top-k
+  pack from this ranker. No provider is called.
 - **Evidence store.** Hold the passages the judge is allowed to see.
-- **Judge.** An LLM-as-judge prompt with a constrained verdict.
 - **Eval harness.** Frozen claims, expected labels, and a score report.

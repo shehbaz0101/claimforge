@@ -69,9 +69,10 @@ class Evidence(BaseModel):
 
     ``snippet`` holds the abstract when the source returned one, otherwise a
     short snippet. ``work_id``, ``doi``, and ``arxiv_id`` are set only when
-    that source has them. ``score`` is optional and, when the retriever sets
-    it, is a lexical overlap in ``[0, 1]`` rather than an embedding rank.
-    Extra fields are rejected.
+    that source has them. ``score`` is optional until ranking. When the
+    retriever sets it, the value is cosine similarity from the active ranker
+    (embeddings, or TF-IDF when that extra is not installed), clipped to
+    ``[0, 1]``. Extra fields are rejected.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

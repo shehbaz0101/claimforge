@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+
+# OpenAlex / HTTP response dumps. Keep the directory note and placeholder.
+data/cache/*
+!data/cache/.gitkeep
+!data/cache/README.md
+
+# Editor and OS
+.idea/
+.vscode/
+.DS_Store

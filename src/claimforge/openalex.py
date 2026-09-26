@@ -19,6 +19,7 @@ DEFAULT_QUERY = "physics informed neural network"
 DEFAULT_PER_PAGE = 3
 _SELECT = "id,display_name"
 WORK_RECORD_SELECT = "id,display_name,abstract_inverted_index"
+EVIDENCE_SELECT = "id,display_name,doi,ids,abstract_inverted_index"
 
 
 class OpenAlexError(ClaimForgeError):
@@ -89,14 +90,20 @@ def search_work_records(
     *,
     per_page: int = DEFAULT_PER_PAGE,
     mailto: str | None = None,
+    select: str = WORK_RECORD_SELECT,
 ) -> list[dict[str, Any]]:
-    """Return OpenAlex work dicts including the abstract inverted index."""
+    """Return OpenAlex work dicts.
+
+    The default ``select`` includes the abstract inverted index used by claim
+    extraction. Evidence retrieval passes ``EVIDENCE_SELECT``, which also
+    asks for DOI fields.
+    """
 
     url = build_works_search_url(
         query,
         per_page=per_page,
         mailto=mailto,
-        select=WORK_RECORD_SELECT,
+        select=select,
     )
     records: list[dict[str, Any]] = []
     for item in _result_items(client.get(url)):

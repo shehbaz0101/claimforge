@@ -19,6 +19,7 @@ from claimforge.http_cache import (
 from claimforge.literature import lexical_score, normalize_arxiv_id, normalize_doi
 from claimforge.models import Claim, Evidence, EvidenceSource
 from claimforge.openalex import EVIDENCE_SELECT
+from claimforge.rank import RankerError
 from claimforge.retrieve import (
     EvidenceRetrievalError,
     evidence_from_openalex_record,
@@ -198,6 +199,7 @@ def test_retrieve_evidence_merges_sources_from_mocked_http() -> None:
         per_source=2,
         top_k=5,
         mailto="dev@example.com",
+        ranker="lexical",
     )
 
     assert len(evidence) == 2
@@ -233,14 +235,14 @@ def test_retrieve_evidence_accepts_a_claim_and_limits_top_k() -> None:
         source_work_id="https://openalex.org/W9",
         source_title="PINN",
     )
-    evidence = retrieve_evidence(client, claim, per_source=2, top_k=1)
+    evidence = retrieve_evidence(client, claim, per_source=2, top_k=1, ranker="lexical")
     assert len(evidence) == 1
     assert "Burgers" in evidence[0].snippet or "Burgers" in evidence[0].title
 
 
 def test_arxiv_406_keeps_other_sources() -> None:
     client = FakeCatalog(_routes(arxiv=_response(406, b"")))
-    evidence = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5)
+    evidence = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5, ranker="lexical")
     assert len(evidence) == 1
     assert evidence[0].source is EvidenceSource.openalex
     assert evidence[0].doi == "10.1000/pinn"
@@ -248,7 +250,7 @@ def test_arxiv_406_keeps_other_sources() -> None:
 
 def test_semantic_scholar_401_does_not_drop_other_sources() -> None:
     client = FakeCatalog(_routes(s2=_response(401, b'{"message":"unauthorized"}')))
-    evidence = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5)
+    evidence = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5, ranker="lexical")
     assert evidence
     assert all(item.source is not EvidenceSource.semantic_scholar for item in evidence)
 
@@ -260,7 +262,7 @@ def test_one_provider_outage_keeps_the_rest() -> None:
             s2=HttpRequestError("limited", status_code=500, url="https://api.semanticscholar.org"),
         )
     )
-    evidence = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5)
+    evidence = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5, ranker="lexical")
     assert evidence
     assert all(item.source is EvidenceSource.arxiv for item in evidence)
 
@@ -269,7 +271,7 @@ def test_all_provider_failures_raise() -> None:
     error = HttpRequestError("down", status_code=503, url="https://example.test")
     client = FakeCatalog(_routes(openalex=error, arxiv=error, s2=error))
     with pytest.raises(EvidenceRetrievalError) as caught:
-        retrieve_evidence(client, CLAIM_TEXT, per_source=1, top_k=3)
+        retrieve_evidence(client, CLAIM_TEXT, per_source=1, top_k=3, ranker="lexical")
     assert len(caught.value.errors) == 3
 
 
@@ -360,8 +362,8 @@ def test_disk_cache_serves_every_provider(tmp_path: Path) -> None:
         max_retries=0,
         jitter=0.0,
     )
-    first = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5)
-    second = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5)
+    first = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5, ranker="lexical")
+    second = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5, ranker="lexical")
 
     assert first == second
     assert first
@@ -383,12 +385,16 @@ def test_retrieve_evidence_cli_prints_json(
         top_k: int,
         mailto: str | None,
         s2_api_key: str | None,
+        ranker: str = "auto",
+        embedding_cache_dir: object = None,
     ) -> list[Evidence]:
         seen["text"] = claim.text if isinstance(claim, Claim) else claim
         seen["per_source"] = per_source
         seen["top_k"] = top_k
         seen["mailto"] = mailto
         seen["s2_api_key"] = s2_api_key
+        seen["ranker"] = ranker
+        seen["embedding_cache_dir"] = embedding_cache_dir
         return [
             Evidence(
                 id="ev_demo",
@@ -403,10 +409,12 @@ def test_retrieve_evidence_cli_prints_json(
 
     monkeypatch.setenv("CLAIMFORGE_OPENALEX_MAILTO", "dev@example.com")
     monkeypatch.delenv("CLAIMFORGE_S2_API_KEY", raising=False)
+    monkeypatch.setattr("claimforge.rank.embeddings_available", lambda: False)
     monkeypatch.setattr("claimforge.cli.retrieve_evidence", fake_retrieve)
 
     assert main(["retrieve-evidence", "--text", CLAIM_TEXT, "--top-k", "3", "--per-source", "4"]) == 0
-    payload = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
     assert payload[0]["id"] == "ev_demo"
     assert payload[0]["source"] == "openalex"
     assert payload[0]["score"] == 0.75
@@ -416,7 +424,10 @@ def test_retrieve_evidence_cli_prints_json(
         "top_k": 3,
         "mailto": "dev@example.com",
         "s2_api_key": None,
+        "ranker": "auto",
+        "embedding_cache_dir": Path("data/cache/embeddings"),
     }
+    assert captured.err.strip() == "ranker: lexical"
 
 
 def test_retrieve_evidence_cli_reads_claim_json(
@@ -450,6 +461,8 @@ def test_retrieve_evidence_cli_reads_claim_json(
         top_k: int,
         mailto: str | None,
         s2_api_key: str | None,
+        ranker: str = "auto",
+        embedding_cache_dir: object = None,
     ) -> list[Evidence]:
         assert isinstance(claim, Claim)
         seen.append(claim.id)
@@ -491,6 +504,8 @@ def test_retrieve_evidence_cli_single_claim_object_prints_evidence_array(
         top_k: int,
         mailto: str | None,
         s2_api_key: str | None,
+        ranker: str = "auto",
+        embedding_cache_dir: object = None,
     ) -> list[Evidence]:
         return [
             Evidence(
@@ -521,6 +536,8 @@ def test_retrieve_evidence_cli_returns_one_when_every_source_fails(
         top_k: int,
         mailto: str | None,
         s2_api_key: str | None,
+        ranker: str = "auto",
+        embedding_cache_dir: object = None,
     ) -> list[Evidence]:
         raise EvidenceRetrievalError(["openalex: down", "arxiv: down", "semantic_scholar: down"])
 
@@ -537,9 +554,86 @@ def test_retrieve_evidence_cli_returns_one_when_every_source_fails(
         ["retrieve-evidence", "--text", "   "],
         ["retrieve-evidence", "--text", "neural", "--top-k", "0"],
         ["retrieve-evidence", "--text", "neural", "--per-source", "26"],
+        ["retrieve-evidence", "--text", "neural", "--ranker", "nope"],
     ],
 )
 def test_retrieve_evidence_cli_rejects_bad_arguments(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as caught:
         main(argv)
     assert caught.value.code == 2
+
+
+def test_retrieve_evidence_rescores_with_the_given_ranker() -> None:
+    class PreferBurgers:
+        name = "embeddings"
+
+        def score(self, query: str, documents: list[str]) -> list[float]:
+            return [0.95 if "burgers" in document.casefold() else 0.05 for document in documents]
+
+    evidence = retrieve_evidence(
+        FakeCatalog(_routes()),
+        CLAIM_TEXT,
+        per_source=2,
+        top_k=2,
+        ranker=PreferBurgers(),
+    )
+    assert [item.score for item in evidence] == [0.95, 0.05]
+    assert "Burgers" in f"{evidence[0].title} {evidence[0].snippet}"
+
+
+def test_auto_ranker_matches_lexical_scores_without_the_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("claimforge.rank.embeddings_available", lambda: False)
+    client = FakeCatalog(_routes())
+    auto = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5, ranker="auto")
+    lexical = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5, ranker="lexical")
+    assert [item.score for item in auto] == [item.score for item in lexical]
+    assert auto[0].score is not None and auto[0].score > (auto[1].score or 0.0)
+
+
+def test_embeddings_ranker_fails_before_any_catalog_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("claimforge.rank.embeddings_available", lambda: False)
+    client = FakeCatalog(_routes())
+    with pytest.raises(RankerError, match="sentence-transformers"):
+        retrieve_evidence(client, CLAIM_TEXT, per_source=1, top_k=1, ranker="embeddings")
+    assert client.urls == []
+
+
+def test_retrieve_evidence_cli_reports_the_selected_ranker(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_retrieve(
+        client: object,
+        claim: Claim | str,
+        *,
+        per_source: int,
+        top_k: int,
+        mailto: str | None,
+        s2_api_key: str | None,
+        ranker: str = "auto",
+        embedding_cache_dir: object = None,
+    ) -> list[Evidence]:
+        seen["ranker"] = ranker
+        return [
+            Evidence(
+                id="ev_demo",
+                title="PINN",
+                source=EvidenceSource.openalex,
+                url="https://openalex.org/W1",
+                score=0.4,
+            )
+        ]
+
+    monkeypatch.setattr("claimforge.rank.embeddings_available", lambda: True)
+    monkeypatch.setattr("claimforge.cli.retrieve_evidence", fake_retrieve)
+    assert main(["retrieve-evidence", "--text", "neural networks", "--ranker", "lexical"]) == 0
+    captured = capsys.readouterr()
+    assert seen["ranker"] == "lexical"
+    assert captured.err.strip() == "ranker: lexical"
+    assert json.loads(captured.out)[0]["score"] == 0.4

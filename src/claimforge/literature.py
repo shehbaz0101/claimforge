@@ -1,7 +1,9 @@
-"""Identifier cleanup and the lexical score used before embedding rank.
+"""Identifier cleanup and the Day 3 term-overlap score.
 
-Day 4 replaces ``lexical_score`` with an embedding ranker. These helpers stay
-free of HTTP so each provider can normalize ids the same way.
+The evidence pack is scored in ``claimforge.rank`` (embedding cosine, or
+TF-IDF cosine when sentence-transformers is not installed). ``lexical_score``
+remains the earlier overlap heuristic. These helpers stay free of HTTP so
+each provider can normalize ids the same way.
 """
 
 from __future__ import annotations
@@ -185,7 +187,8 @@ def lexical_score(query: str, title: str, snippet: str) -> float:
     """Overlap of query terms with the title and snippet, in ``[0, 1]``.
 
     A term in the title counts twice a term that appears only in the snippet.
-    This is a stand-in until the Day 4 embedding ranker.
+    The retriever no longer uses this for the pack. ``claimforge.rank`` scores
+    with TF-IDF cosine or embedding cosine.
     """
 
     wanted = content_terms(query, limit=24) or tokens(query)[:24]

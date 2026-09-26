@@ -4,13 +4,16 @@ OpenAlex is the primary catalog. arXiv and Semantic Scholar add papers that
 OpenAlex may miss. Every GET uses the shared disk cache. Semantic Scholar
 401/429 responses are empty contributions, not failures of the whole pack.
 
-Returned scores are lexical overlap. Day 4 replaces that with embeddings.
+After dedupe, the pack is re-scored by ``claimforge.rank``. ``auto`` uses a
+local embedding model when sentence-transformers is installed and TF-IDF
+cosine otherwise. The score on each record is that cosine, in ``[0, 1]``.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Protocol
 
 from claimforge.arxiv import search_arxiv
@@ -18,7 +21,6 @@ from claimforge.extract import abstract_text_from_work
 from claimforge.http_cache import CachedResponse, ClaimForgeError
 from claimforge.literature import (
     clip_text,
-    lexical_score,
     make_evidence_id,
     normalize_arxiv_id,
     normalize_doi,
@@ -26,6 +28,7 @@ from claimforge.literature import (
 )
 from claimforge.models import Claim, Evidence, EvidenceSource
 from claimforge.openalex import EVIDENCE_SELECT, search_work_records
+from claimforge.rank import TextRanker, pack_top_k, resolve_ranker
 from claimforge.semantic_scholar import search_semantic_scholar
 
 logger = logging.getLogger(__name__)
@@ -68,12 +71,20 @@ def retrieve_evidence(
     top_k: int = DEFAULT_TOP_K,
     mailto: str | None = None,
     s2_api_key: str | None = None,
+    ranker: str | TextRanker = "auto",
+    embedding_cache_dir: Path | None = None,
+    embedding_model: str | None = None,
 ) -> list[Evidence]:
-    """Gather, deduplicate, and return the top evidence for a claim.
+    """Gather, deduplicate, rank, and return the top evidence for a claim.
 
     ``claim`` may be a ``Claim`` or raw claim text. OpenAlex receives the
     optional polite-pool ``mailto``. ``s2_api_key`` is optional; when it is
     missing the Semantic Scholar call stays unauthenticated.
+
+    ``ranker`` is ``auto``, ``lexical``, ``embeddings``, or a ranker object.
+    ``auto`` prefers a local embedding model when sentence-transformers is
+    installed and otherwise scores with TF-IDF cosine. The ranker is resolved
+    before any catalog request so a missing extra fails without network I/O.
     """
 
     text = claim.text if isinstance(claim, Claim) else claim
@@ -84,6 +95,11 @@ def retrieve_evidence(
         raise ValueError("per_source must be >= 1")
     if top_k < 1:
         raise ValueError("top_k must be >= 1")
+    active = resolve_ranker(
+        ranker,
+        cache_dir=embedding_cache_dir,
+        model_name=embedding_model,
+    )
 
     packs: list[list[Evidence]] = []
     failures: list[str] = []
@@ -130,7 +146,7 @@ def retrieve_evidence(
 
     if len(failures) == 3:
         raise EvidenceRetrievalError(failures)
-    return merge_evidence(packs, query=query, top_k=top_k)
+    return merge_evidence(packs, query=query, top_k=top_k, ranker=active)
 
 
 def evidence_from_openalex_record(record: Mapping[str, object]) -> Evidence | None:
@@ -166,12 +182,15 @@ def merge_evidence(
     *,
     query: str,
     top_k: int,
+    ranker: TextRanker | None = None,
 ) -> list[Evidence]:
-    """Deduplicate packs and return the highest-scoring ``top_k`` records.
+    """Deduplicate packs, re-score them, and return the top ``top_k`` records.
 
     The same DOI or arXiv id collapses to one record. Identifiers are copied
     across sources. A shared title merges only when one copy has no DOI,
     arXiv id, or work id, so two different catalog records are kept apart.
+    Scores come from ``ranker``, or from TF-IDF cosine when ``ranker`` is
+    omitted. Passing ``auto`` is the job of ``retrieve_evidence``.
     """
 
     if top_k < 1:
@@ -225,16 +244,8 @@ def merge_evidence(
     for index, item in enumerate(items):
         clusters.setdefault(find(index), []).append(item)
 
-    merged = [_merge_cluster(cluster, query) for cluster in clusters.values()]
-    merged.sort(
-        key=lambda item: (
-            -(item.score or 0.0),
-            _SOURCE_RANK[item.source],
-            item.title.casefold(),
-            item.id,
-        )
-    )
-    return merged[:top_k]
+    merged = [_merge_cluster(cluster) for cluster in clusters.values()]
+    return pack_top_k(merged, query, top_k=top_k, ranker=ranker)
 
 
 def _openalex_doi(record: Mapping[str, object]) -> str | None:
@@ -284,7 +295,7 @@ def _has_strong_id(members: Sequence[Evidence]) -> bool:
     return any(item.doi or item.arxiv_id or item.work_id for item in members)
 
 
-def _merge_cluster(members: Sequence[Evidence], query: str) -> Evidence:
+def _merge_cluster(members: Sequence[Evidence]) -> Evidence:
     ordered = sorted(members, key=lambda item: _SOURCE_RANK[item.source])
     primary = ordered[0]
     title = primary.title or max((item.title for item in ordered), key=len)
@@ -310,5 +321,4 @@ def _merge_cluster(members: Sequence[Evidence], query: str) -> Evidence:
         doi=doi,
         arxiv_id=arxiv_id,
         url=primary.url,
-        score=lexical_score(query, title, snippet),
     )

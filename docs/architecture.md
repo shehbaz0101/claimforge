@@ -1,8 +1,9 @@
 # Architecture
 
 ClaimForge will check a scientific claim against the literature and record an
-LLM judge's verdict. Day 1 only ships the project skeleton and a cached
-OpenAlex client. Extraction, retrieval ranking, and judging are not built yet.
+LLM judge's verdict. Day 1 shipped the project skeleton and a cached OpenAlex
+client. Day 2 adds the claim schema and an abstract extractor. Retrieval
+ranking and judging are not built yet.
 
 ## Pipeline
 
@@ -19,12 +20,12 @@ flowchart LR
   judge --> verdict[Support, refute, or insufficient]
 ```
 
-| Stage | Day 1 state | Role |
+| Stage | State | Role |
 | --- | --- | --- |
-| Claim extract | Planned (Day 2) | Turn source text into atomic claims with a stable schema. |
+| Claim extract | Shipped (Day 2) | Turn an abstract into atomic claims with a stable schema. |
 | Retrieve | Smoke only | Search OpenAlex works. No passage ranking or full-text fetch yet. |
-| HTTP disk cache | Shipped | Cache GET responses under `data/cache` and retry 429 / transient 5xx. |
-| LLM judge | Planned | Score a claim against retrieved evidence. No model is called on Day 1. |
+| HTTP disk cache | Shipped (Day 1) | Cache GET responses under `data/cache` and retry 429 / transient 5xx. |
+| LLM judge | Planned | Score a claim against retrieved evidence. No judge is called. |
 
 ## HTTP cache
 
@@ -54,17 +55,49 @@ the call can use the polite pool. That value is optional and is not a secret.
 `search`, `per_page` (default 3), and `select=id,display_name`. It prints each
 title and OpenAlex id and exits 0 when the search succeeds.
 
+## Claim schema
+
+`claimforge.models.Claim` is a frozen Pydantic model. Extra fields are
+rejected. The JSON form uses plain strings and numbers:
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `id` | yes | Stable `clm_` plus a short hash of the work id, order, and text. |
+| `text` | yes | One claim sentence. |
+| `source_work_id` | yes | OpenAlex work id. |
+| `source_title` | yes | May be an empty string when the work has no title. |
+| `confidence` | no | Float in `[0, 1]`, or null. |
+| `claim_type` | no | `factual`, `method`, `result`, `other`, or null. |
+
+## Extractor
+
+`claimforge.extract.extract_claims_from_abstract` splits an abstract into
+sentences and keeps sentences that match claim cues (`we show`, `results`,
+`findings`, `demonstrates`, `evidence that`, method phrases such as
+`we propose` and `our method`, and a few factual patterns). It does not need
+an API key.
+
+`extract_from_openalex_work` reads a work dict. It uses a string `abstract`
+when one is present, otherwise it rebuilds prose from
+`abstract_inverted_index`.
+
+`claimforge extract-claims --query "..."` reuses the Day 1 cached OpenAlex
+client, requests `id`, `display_name`, and `abstract_inverted_index`, and
+prints a JSON array of claims. `claimforge smoke-openalex` is unchanged and
+still selects only ids and titles.
+
+Optional LLM extraction runs only when both `CLAIMFORGE_LLM_API_KEY` and
+`CLAIMFORGE_LLM_MODEL` are set. The client speaks OpenAI-compatible chat
+completions (`CLAIMFORGE_LLM_BASE_URL`, default `https://api.openai.com/v1`).
+Set `CLAIMFORGE_LLM_PROVIDER=rules` to force the rule path. If the LLM call
+fails, extraction falls back to the rules. Unset variables skip the LLM.
+
 ## Planned components
 
 These names describe later days. They have no modules yet.
 
-- **Claim schema.** Fields for the claim text, source span, and entity hints.
-- **Extractor.** Map a paragraph or abstract to a list of claims.
-- **Retriever.** Turn a claim into OpenAlex queries and keep the works that
-  can support or refute it.
+- **Retriever (Day 3).** Multi-source evidence retrieval: turn a claim into
+  queries and keep the works that can support or refute it.
 - **Evidence store.** Hold the passages the judge is allowed to see.
 - **Judge.** An LLM-as-judge prompt with a constrained verdict.
 - **Eval harness.** Frozen claims, expected labels, and a score report.
-
-Day 2's first task is the claim schema and extractor. It should not depend on
-a live model or on the judge.

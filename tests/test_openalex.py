@@ -11,6 +11,7 @@ from claimforge.cli import main
 from claimforge.http_cache import CachedResponse
 from claimforge.openalex import (
     DEFAULT_QUERY,
+    EVIDENCE_SELECT,
     WORK_RECORD_SELECT,
     OpenAlexError,
     Work,
@@ -123,6 +124,12 @@ def test_search_work_records_requests_abstracts_and_keeps_indexes() -> None:
         }
     ]
     assert parse_qs(urlsplit(client.urls[0]).query)["select"] == [WORK_RECORD_SELECT]
+
+
+def test_search_work_records_can_request_evidence_fields() -> None:
+    client = FakeClient(_cached(200, {"results": []}))
+    assert search_work_records(client, "pin", per_page=2, select=EVIDENCE_SELECT) == []
+    assert parse_qs(urlsplit(client.urls[0]).query)["select"] == [EVIDENCE_SELECT]
 
 
 def test_format_works_lists_titles_and_ids() -> None:

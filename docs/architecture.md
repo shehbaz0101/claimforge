@@ -2,8 +2,9 @@
 
 ClaimForge will check a scientific claim against the literature and record an
 LLM judge's verdict. Day 1 shipped the project skeleton and a cached OpenAlex
-client. Day 2 adds the claim schema and an abstract extractor. Retrieval
-ranking and judging are not built yet.
+client. Day 2 adds the claim schema and an abstract extractor. Day 3 retrieves
+an evidence pack from OpenAlex, arXiv, and Semantic Scholar. Ranking is still
+lexical overlap. Embeddings and the judge are not built yet.
 
 ## Pipeline
 
@@ -12,9 +13,13 @@ flowchart LR
   source[Source text] --> extract[Claim extract]
   extract --> claims[Atomic claims]
   claims --> retrieve[Retrieve evidence]
-  retrieve --> openalex[OpenAlex works]
+  retrieve --> openalex[OpenAlex]
+  retrieve --> arxiv[arXiv]
+  retrieve --> s2[Semantic Scholar]
   openalex --> cache[HTTP disk cache]
-  retrieve --> evidence[Evidence]
+  arxiv --> cache
+  s2 --> cache
+  retrieve --> evidence[Evidence pack]
   claims --> judge[LLM judge]
   evidence --> judge
   judge --> verdict[Support, refute, or insufficient]
@@ -23,7 +28,8 @@ flowchart LR
 | Stage | State | Role |
 | --- | --- | --- |
 | Claim extract | Shipped (Day 2) | Turn an abstract into atomic claims with a stable schema. |
-| Retrieve | Smoke only | Search OpenAlex works. No passage ranking or full-text fetch yet. |
+| Retrieve | Shipped (Day 3) | Query OpenAlex, arXiv, and Semantic Scholar. Deduplicate and keep the top matches. |
+| Rank | Planned (Day 4) | Replace lexical overlap with an embedding ranker. Not built. |
 | HTTP disk cache | Shipped (Day 1) | Cache GET responses under `data/cache` and retry 429 / transient 5xx. |
 | LLM judge | Planned | Score a claim against retrieved evidence. No judge is called. |
 
@@ -92,12 +98,61 @@ completions (`CLAIMFORGE_LLM_BASE_URL`, default `https://api.openai.com/v1`).
 Set `CLAIMFORGE_LLM_PROVIDER=rules` to force the rule path. If the LLM call
 fails, extraction falls back to the rules. Unset variables skip the LLM.
 
+## Evidence retrieval
+
+`claimforge.retrieve.retrieve_evidence` takes a `Claim` or raw claim text and
+returns the top evidence after merging three catalogs. Every request uses
+`CachedHttpClient`, including Atom XML from arXiv. No API key is required.
+
+| Source | Role | Endpoint |
+| --- | --- | --- |
+| OpenAlex | Primary | `GET https://api.openalex.org/works` with `search` and `EVIDENCE_SELECT` (`id`, `display_name`, `doi`, `ids`, `abstract_inverted_index`). Optional `CLAIMFORGE_OPENALEX_MAILTO` joins the polite pool. |
+| arXiv | Free, no key | `GET https://export.arxiv.org/api/query` (Atom XML). Content terms are AND-ed. |
+| Semantic Scholar | Secondary | `GET https://api.semanticscholar.org/graph/v1/paper/search`, unauthenticated. Optional `CLAIMFORGE_S2_API_KEY` is sent as `x-api-key` and is never put in the URL or required in CI. |
+
+Semantic Scholar answers HTTP 401, 403, and 429 with an empty contribution so
+a rate limit does not fail the command or CI. If OpenAlex or arXiv fails, the
+other sources are still returned. The command exits 1 only when every source
+fails before it can answer.
+
+Duplicates collapse when they share a DOI or an arXiv id (version suffixes
+ignored). Identifiers are copied onto one record. OpenAlex wins the `source`
+and `url` when it is one of the copies, and the longer abstract is kept. A
+shared title merges only when one copy has no DOI, arXiv id, or work id.
+
+`score` is lexical overlap of the claim with the title and snippet, in
+`[0, 1]`. Title matches count more than snippet matches. Day 4 replaces this
+with an embedding ranker. The retriever does not fetch full text.
+
+## Evidence schema
+
+`claimforge.models.Evidence` is a frozen Pydantic model. Extra fields are
+rejected.
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `id` | yes | `ev_` plus a short hash. DOI, then arXiv id, then work id, then title. |
+| `title` | yes | May be empty when the source has no title. |
+| `snippet` | yes | Abstract when the source returned one, otherwise a short snippet. May be empty. |
+| `source` | yes | `openalex`, `arxiv`, or `semantic_scholar`. |
+| `work_id` | no | OpenAlex work URL, or a Semantic Scholar paper id. |
+| `doi` | no | Bare DOI, without a `https://doi.org/` prefix. |
+| `arxiv_id` | no | arXiv id without a version suffix. |
+| `url` | yes | Catalog URL for the preferred source. |
+| `score` | no | Finite float `>= 0`, or null before ranking. |
+
+`claimforge retrieve-evidence --text "..."` prints a JSON array of evidence.
+`--claim-json path` reads one claim object, or a list such as `extract-claims`
+output. One claim prints the same array. Several claims print
+`{"claim_id", "evidence"}` objects. `--top-k` and `--per-source` default to 8
+and must be from 1 to 25.
+
 ## Planned components
 
 These names describe later days. They have no modules yet.
 
-- **Retriever (Day 3).** Multi-source evidence retrieval: turn a claim into
-  queries and keep the works that can support or refute it.
+- **Ranking (Day 4).** An embedding ranker over the evidence pack. The Day 3
+  score is only lexical overlap.
 - **Evidence store.** Hold the passages the judge is allowed to see.
 - **Judge.** An LLM-as-judge prompt with a constrained verdict.
 - **Eval harness.** Frozen claims, expected labels, and a score report.

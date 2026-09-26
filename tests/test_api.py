@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from claimforge import __version__
-from claimforge.api import RANKER_HEADER, app
+from claimforge.api import RANKER_HEADER, VERIFY_LIMITER, VERIFY_RATE_DETAIL, app
 from claimforge.cli import main
 from claimforge.judge import claim_from_text
 from claimforge.models import Claim, Evidence, EvidenceSource
@@ -46,6 +46,7 @@ def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(urllib.request, "urlopen", explode)
     monkeypatch.setattr("claimforge.judge._chat_completion", explode)
     monkeypatch.setattr("claimforge.extract._chat_completion", explode)
+    VERIFY_LIMITER.reset()
     for name in (
         "CLAIMFORGE_LLM_API_KEY",
         "CLAIMFORGE_LLM_MODEL",
@@ -53,6 +54,12 @@ def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
         "CLAIMFORGE_LLM_BASE_URL",
         "CLAIMFORGE_OPENALEX_MAILTO",
         "CLAIMFORGE_S2_API_KEY",
+        "CLAIMFORGE_OFFLINE",
+        "CLAIMFORGE_FIXTURE_DIR",
+        "CLAIMFORGE_VERIFY_RATE_LIMIT",
+        "CLAIMFORGE_VERIFY_RATE_WINDOW_S",
+        "CLAIMFORGE_HTTP_MIN_INTERVAL_S",
+        "CLAIMFORGE_SOURCE_FAILURE_LIMIT",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -213,6 +220,113 @@ def test_verify_maps_retrieval_failure_to_502(
     assert response.status_code == 502
     assert "openalex: down" in response.json()["detail"]
     assert RANKER_HEADER not in response.headers
+
+
+def test_verify_unexpected_failure_is_json_502(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_retrieve(*_args: object, **_kwargs: object) -> list[Evidence]:
+        raise RuntimeError("provider blew up")
+
+    monkeypatch.setattr("claimforge.api.retrieve_evidence", fake_retrieve)
+    response = client.post("/verify", json={"text": CLAIM_TEXT, "ranker": "lexical"})
+    assert response.status_code == 502
+    assert response.json() == {"detail": "evidence retrieval failed"}
+
+
+def test_verify_rate_limit_returns_429_json(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"n": 0}
+
+    def fake_retrieve(*_args: object, **_kwargs: object) -> list[Evidence]:
+        calls["n"] += 1
+        return []
+
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(VERIFY_LIMITER, "_clock", lambda: clock["now"])
+    monkeypatch.setenv("CLAIMFORGE_VERIFY_RATE_LIMIT", "2")
+    monkeypatch.setenv("CLAIMFORGE_VERIFY_RATE_WINDOW_S", "60")
+    monkeypatch.setattr("claimforge.api.retrieve_evidence", fake_retrieve)
+    monkeypatch.setattr("claimforge.rank.embeddings_available", lambda: False)
+    VERIFY_LIMITER.reset()
+
+    first = client.post("/verify", json={"text": CLAIM_TEXT, "ranker": "lexical"})
+    second = client.post("/verify", json={"text": CLAIM_TEXT, "ranker": "lexical"})
+    blocked = client.post("/verify", json={"text": CLAIM_TEXT, "ranker": "lexical"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert blocked.status_code == 429
+    assert blocked.json()["detail"] == VERIFY_RATE_DETAIL
+    assert blocked.json()["retry_after_s"] == 60.0
+    assert blocked.headers["retry-after"] == "60"
+    assert calls["n"] == 2
+
+    health = client.get("/health")
+    judge = client.post("/judge", json={"claim": CLAIM.to_json_dict(), "evidence": []})
+    assert health.status_code == 200
+    assert judge.status_code == 200
+    assert calls["n"] == 2
+
+    clock["now"] += 60
+    again = client.post("/verify", json={"text": CLAIM_TEXT, "ranker": "lexical"})
+    assert again.status_code == 200
+    assert calls["n"] == 3
+
+
+def test_verify_rate_limit_can_be_disabled(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAIMFORGE_VERIFY_RATE_LIMIT", "0")
+    monkeypatch.setattr("claimforge.api.retrieve_evidence", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("claimforge.rank.embeddings_available", lambda: False)
+    VERIFY_LIMITER.reset()
+    for _ in range(3):
+        response = client.post("/verify", json={"text": CLAIM_TEXT, "ranker": "lexical"})
+        assert response.status_code == 200
+
+
+def test_verify_offline_env_does_not_use_the_network(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CLAIMFORGE_OFFLINE", "1")
+    monkeypatch.setenv("CLAIMFORGE_FIXTURE_DIR", str(tmp_path))
+    monkeypatch.setattr("claimforge.rank.embeddings_available", lambda: False)
+    response = client.post(
+        "/verify",
+        json={
+            "text": "Glaciers in this fixture were not recorded.",
+            "ranker": "lexical",
+            "cache_dir": str(tmp_path / "cache"),
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["label"] == "insufficient"
+    assert body["evidence_ids"] == []
+    assert response.headers[RANKER_HEADER] == "lexical"
+
+
+def test_verify_offline_env_uses_the_committed_cassette(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAIMFORGE_OFFLINE", "1")
+    monkeypatch.setattr("claimforge.rank.embeddings_available", lambda: False)
+    response = client.post(
+        "/verify",
+        json={"text": CLAIM_TEXT, "ranker": "lexical"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body["evidence_ids"]) == {"ev_burgers_oa", "ev_burgers_ax"}
+    assert response.headers[RANKER_HEADER] == "lexical"
 
 
 def test_verify_rejects_a_missing_embedding_ranker_before_catalog_calls(

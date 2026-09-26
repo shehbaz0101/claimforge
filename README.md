@@ -10,11 +10,13 @@ path runs only when `CLAIMFORGE_LLM_*` is set. Day 3 retrieves evidence from
 OpenAlex, arXiv, and Semantic Scholar. Day 4 re-scores that pack and keeps
 the top matches. Day 5 judges the pack with a rubric and records support,
 refute, or insufficient evidence. The same LLM variables can replace that
-rubric. Leave them unset to stay offline. Day 6 scores a frozen gold fixture
-with the rubric and prints accuracy, per-label F1, and agreement. That
-command does not use the network. Day 7 serves the same verify and judge
-paths over HTTP, and `claimforge eval` can score a directory of fixtures
-or several files in one run.
+rubric. Leave them unset to stay on the rubric. Day 6 scores a frozen gold
+fixture with the rubric and prints accuracy, per-label F1, and agreement.
+That command does not use the network. Day 7 serves the same verify and
+judge paths over HTTP, and `claimforge eval` can score a directory of
+fixtures or several files in one run. Day 8 paces catalog hosts, skips a
+catalog after repeated hard failures, rate-limits `POST /verify`, and adds
+an offline mode that does not open a network connection.
 
 ## Why this shape
 
@@ -33,7 +35,8 @@ extraction from abstracts. Day 3 implements multi-source evidence retrieval.
 Day 4 ranks the pack with a local embedding model or with TF-IDF cosine.
 Day 5 judges that pack. Day 6 scores a gold fixture against that judge.
 Day 7 is a small FastAPI service in front of verify, judge, and eval.
-See [docs/architecture.md](docs/architecture.md).
+Day 8 adds host pacing, a per-source failure skip, a `/verify` rate limit,
+and offline cassettes. See [docs/architecture.md](docs/architecture.md).
 
 ```mermaid
 flowchart LR
@@ -86,6 +89,9 @@ a Semantic Scholar key; retrieval works without it. Set
 `CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` only if you want
 extract-claims, verify, or judge to call an OpenAI-compatible chat endpoint.
 Leave them unset to stay on the rule extractor and the rubric judge.
+`CLAIMFORGE_OFFLINE=1` forces verify and retrieve to skip the network.
+`CLAIMFORGE_HTTP_MIN_INTERVAL_S` spaces outbound requests to one host.
+`CLAIMFORGE_VERIFY_RATE_LIMIT` caps `POST /verify` in one process.
 
 Cached HTTP bodies are written to `data/cache/` and gitignored. The directory
 is kept with a short note so a fresh clone still has a place to write.
@@ -239,6 +245,40 @@ curl -s http://127.0.0.1:8000/judge \
 An empty pack is insufficient. A saved evidence list uses the same fields
 as `claimforge judge`.
 
+`POST /verify` is rate-limited in this process. The default is 60 requests
+per 60 seconds. A full window returns HTTP 429:
+
+```json
+{"detail": "rate limit exceeded for /verify", "retry_after_s": 60.0}
+```
+
+`Retry-After` is the same wait in whole seconds. Set
+`CLAIMFORGE_VERIFY_RATE_LIMIT=0` to disable it. `/health`, `/judge`, and
+`/eval` are not limited.
+
+## Offline mode
+
+`CLAIMFORGE_OFFLINE=1` or `--offline` does not contact OpenAlex, arXiv, or
+Semantic Scholar. `verify` and `retrieve-evidence` read a cassette whose
+text matches the claim, or a response already stored in `data/cache`. If
+neither exists, retrieve prints `[]` and verify prints an insufficient
+verdict. Both exit 0.
+
+```bash
+claimforge verify --offline --ranker lexical --text "Physics-informed neural networks reduce the error on the Burgers equation."
+```
+
+That uses `data/fixtures/cassettes/burgers.json`. The passages are synthetic.
+A different sentence, with an empty cache, is insufficient:
+
+```bash
+CLAIMFORGE_OFFLINE=1 claimforge verify --ranker lexical --text "This sentence has no cassette."
+```
+
+`claimforge serve --offline` sets the same variable for `/verify`. Cassettes
+live in `CLAIMFORGE_FIXTURE_DIR` (default `data/fixtures/cassettes`). Gold
+eval does not read them. Online verify does not read them either.
+
 Offline eval, from a fixture path or from inline items:
 
 ```bash
@@ -285,9 +325,16 @@ pytest -m integration
   `--strict` exits 1 when accuracy is below 1.0. Without `--strict` the
   command still prints metrics and exits 0. A directory of fixtures is one
   batch. Ids must stay unique across those files.
-- The HTTP API has no rate limit and no auth. `/verify` can call OpenAlex,
-  arXiv, and Semantic Scholar. `/eval` with `fixture` reads a local path.
-  Bind it to localhost unless you mean to expose it. Hardening is Day 8.
+- `POST /verify` allows 60 requests per 60 seconds in one process. The body
+  of a rejection is JSON and the status is 429. There is still no auth.
+  `/eval` with `fixture` reads a local path. Bind the server to localhost
+  unless you mean to expose it.
+- A catalog that fails 3 times in a row in one process is skipped until that
+  process exits. `CLAIMFORGE_SOURCE_FAILURE_LIMIT=0` disables the skip.
+  Semantic Scholar HTTP 401 and 429 stay empty contributions and do not
+  count toward the skip.
+- Offline mode reads cassettes and the disk cache only. It does not refresh
+  a stale cache. Delete `data/cache` and leave offline mode to fetch again.
 - The disk cache has no TTL and no size cap. Delete `data/cache` to refresh.
 - Retries cover 429, 500, 502, 503, 504, and connection failures. Other HTTP
   statuses are returned to the caller.

@@ -9,8 +9,9 @@ eval over HTTP, and the eval CLI accepts a directory of fixtures or several
 files. Day 8 paces catalog hosts, skips a catalog after repeated hard
 failures, rate-limits `POST /verify`, and adds an offline mode that never
 opens a socket. Day 9 adds `claimforge demo` and the sample JSON in
-`docs/samples/`. An optional LLM judge runs only when both
-`CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` are set.
+`docs/samples/`. Day 10 freezes that surface at v0.1.0. An optional LLM
+judge runs only when both `CLAIMFORGE_LLM_API_KEY` and
+`CLAIMFORGE_LLM_MODEL` are set.
 
 ## Pipeline
 
@@ -53,6 +54,7 @@ front for the same verify, judge, and eval functions.
 | Eval | Shipped (Day 6) | Score frozen gold fixtures with the rubric. One file, several files, or a directory. Accuracy, per-label F1, and agreement. No network. |
 | API | Shipped (Day 7) | FastAPI: `GET /health`, `POST /verify`, `POST /judge`, `POST /eval`. |
 | Demo | Shipped (Day 9) | `claimforge demo` prints verify, judge, and eval offline. |
+| Release | Shipped (Day 10) | v0.1.0 freeze. Status note is `PROJECT_STATUS.md`. |
 
 ## HTTP cache
 
@@ -424,9 +426,8 @@ CLAIMFORGE_OFFLINE=1 claimforge verify --text "Physics-informed neural networks 
 claimforge retrieve-evidence --offline --text "Physics-informed neural networks reduce the error on the Burgers equation." --ranker lexical
 ```
 
-## Later
+## Release
 
-Day 10 freezes this surface, tags `v0.1.0`, writes `PROJECT_STATUS.md`, and
-queues the next proposal. The Day 9 change does not tag a release.
-
-- **Evidence store.** Hold the passages the judge is allowed to see.
+Day 10 freezes this surface at v0.1.0. [`PROJECT_STATUS.md`](../PROJECT_STATUS.md)
+is the status note. The annotated tag `v0.1.0` points at the freeze commit.
+An evidence store, and any following project, are out of scope for v0.1.0.

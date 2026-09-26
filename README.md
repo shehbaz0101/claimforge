@@ -7,6 +7,9 @@ Scholar, ranks that pack, and judges it with a rubric. An optional LLM path
 runs only when both `CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` are
 set. Leave them unset to stay on the rule extractor and the rubric.
 
+Project A is frozen at v0.1.0. [PROJECT_STATUS.md](PROJECT_STATUS.md) lists
+what shipped and how to run the offline demo.
+
 ## Quickstart
 
 Python 3.11 or newer.
@@ -57,8 +60,8 @@ Days 1–5 are the cache, claim extraction, multi-source retrieval, ranking,
 and the rubric judge. Day 6 scores a gold fixture. Day 7 serves verify,
 judge, and eval over HTTP. Day 8 adds host pacing, a per-source failure
 skip, a `/verify` rate limit, and offline cassettes. Day 9 is the offline
-demo and the sample JSON under `docs/samples/`. See
-[docs/architecture.md](docs/architecture.md).
+demo and the sample JSON under `docs/samples/`. Day 10 freezes that surface
+at v0.1.0. See [docs/architecture.md](docs/architecture.md).
 
 ```mermaid
 flowchart LR
@@ -125,9 +128,10 @@ Leave them unset to stay on the rule extractor and the rubric judge.
 Cached HTTP bodies are written to `data/cache/` and gitignored. The directory
 is kept with a short note so a fresh clone still has a place to write.
 
-## Demo
+## Demo path
 
 ```bash
+pip install -e ".[dev]"
 claimforge demo
 ./scripts/demo.sh
 ```

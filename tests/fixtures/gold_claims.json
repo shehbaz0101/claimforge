@@ -1,0 +1,358 @@
+{
+  "name": "claimforge-gold-v1",
+  "description": "Frozen gold claims for the Day 5 rubric. Each item is a claim plus an inline evidence pack. Passages are synthetic illustrations of the rubric, not copied abstracts. claimforge eval reads this file only: it does not fetch OpenAlex, arXiv, or Semantic Scholar, and it does not call an LLM. The strict accuracy threshold is 1.0 because every expected_label matches the rubric. Override it with --min-accuracy.",
+  "items": [
+    {
+      "id": "gold_support_burgers",
+      "expected_label": "support",
+      "note": "Two catalogs restate the claim with support cues and high ranker scores.",
+      "claim": {
+        "id": "clm_burgers",
+        "text": "Physics-informed neural networks reduce the error on the Burgers equation.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "Physics-informed neural networks"
+      },
+      "evidence": [
+        {
+          "id": "ev_burgers_oa",
+          "title": "PINNs on Burgers",
+          "snippet": "This study supports the finding that physics-informed neural networks reduce the error on the Burgers equation.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_burgers_oa",
+          "score": 0.82
+        },
+        {
+          "id": "ev_burgers_ax",
+          "title": "Burgers benchmarks",
+          "snippet": "We confirm that physics-informed neural networks reduce the error on the Burgers equation.",
+          "source": "arxiv",
+          "url": "https://example.test/gold/ev_burgers_ax",
+          "score": 0.74
+        }
+      ]
+    },
+    {
+      "id": "gold_support_metformin",
+      "expected_label": "support",
+      "note": "The snippets use the claim verb reduces and do not use the word support.",
+      "claim": {
+        "id": "clm_metformin",
+        "text": "Metformin reduces fasting glucose in adults with type 2 diabetes.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "Metformin and fasting glucose"
+      },
+      "evidence": [
+        {
+          "id": "ev_metformin_oa",
+          "title": "Metformin trial",
+          "snippet": "A randomized trial found that metformin reduces fasting glucose in adults with type 2 diabetes.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_metformin_oa",
+          "score": 0.9
+        },
+        {
+          "id": "ev_metformin_s2",
+          "title": "Glucose follow-up",
+          "snippet": "Follow-up data show metformin reduces fasting glucose in adults with type 2 diabetes.",
+          "source": "semantic_scholar",
+          "url": "https://example.test/gold/ev_metformin_s2",
+          "score": 0.7
+        }
+      ]
+    },
+    {
+      "id": "gold_support_mrna",
+      "expected_label": "support",
+      "note": "Support phrases plus two catalogs clear the support rule.",
+      "claim": {
+        "id": "clm_mrna",
+        "text": "mRNA vaccines reduce hospitalization risk for influenza in older adults.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "mRNA influenza vaccines"
+      },
+      "evidence": [
+        {
+          "id": "ev_mrna_oa",
+          "title": "Influenza hospitalization",
+          "snippet": "Evidence that mRNA vaccines reduce hospitalization risk for influenza in older adults.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_mrna_oa",
+          "score": 0.88
+        },
+        {
+          "id": "ev_mrna_ax",
+          "title": "Older-adult cohort",
+          "snippet": "A cohort study supports that mRNA vaccines reduce hospitalization risk for influenza in older adults.",
+          "source": "arxiv",
+          "url": "https://example.test/gold/ev_mrna_ax",
+          "score": 0.66
+        }
+      ]
+    },
+    {
+      "id": "gold_support_statins_same_catalog",
+      "expected_label": "support",
+      "note": "Both snippets come from OpenAlex. Two snippets from one catalog score coverage 0.75, which still clears support.",
+      "claim": {
+        "id": "clm_statins",
+        "text": "Statins lower low-density lipoprotein cholesterol in adults.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "Statins and LDL cholesterol"
+      },
+      "evidence": [
+        {
+          "id": "ev_statins_a",
+          "title": "LDL trial",
+          "snippet": "This study supports that statins lower low-density lipoprotein cholesterol in adults.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_statins_a",
+          "score": 0.8
+        },
+        {
+          "id": "ev_statins_b",
+          "title": "LDL replication",
+          "snippet": "A replication confirms that statins lower low-density lipoprotein cholesterol in adults.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_statins_b",
+          "score": 0.6
+        }
+      ]
+    },
+    {
+      "id": "gold_refute_aspirin",
+      "expected_label": "refute",
+      "note": "Refute cues and adequate relevance. Coverage is not required for refute.",
+      "claim": {
+        "id": "clm_aspirin",
+        "text": "Aspirin reduces headache risk in adults.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "Aspirin and headache"
+      },
+      "evidence": [
+        {
+          "id": "ev_aspirin_oa",
+          "title": "Aspirin review",
+          "snippet": "A review does not support that aspirin reduces headache risk in adults.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_aspirin_oa",
+          "score": 0.8
+        },
+        {
+          "id": "ev_aspirin_s2",
+          "title": "Headache contradiction",
+          "snippet": "Results contradict the claim that aspirin reduces headache risk in adults.",
+          "source": "semantic_scholar",
+          "url": "https://example.test/gold/ev_aspirin_s2",
+          "score": 0.55
+        }
+      ]
+    },
+    {
+      "id": "gold_refute_burgers_opposite",
+      "expected_label": "refute",
+      "note": "The snippets flip reduce to increase, which is the opposite direction.",
+      "claim": {
+        "id": "clm_burgers_opposite",
+        "text": "Physics-informed neural networks reduce the error on the Burgers equation.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "Physics-informed neural networks"
+      },
+      "evidence": [
+        {
+          "id": "ev_burgers_up_ax",
+          "title": "Burgers error increases",
+          "snippet": "Physics-informed neural networks increase the error on the Burgers equation.",
+          "source": "arxiv",
+          "url": "https://example.test/gold/ev_burgers_up_ax",
+          "score": 0.7
+        },
+        {
+          "id": "ev_burgers_up_s2",
+          "title": "Higher Burgers error",
+          "snippet": "Experiments found physics-informed neural networks increase the error on the Burgers equation.",
+          "source": "semantic_scholar",
+          "url": "https://example.test/gold/ev_burgers_up_s2",
+          "score": 0.5
+        }
+      ]
+    },
+    {
+      "id": "gold_refute_vitamin_d",
+      "expected_label": "refute",
+      "note": "No-effect and no-significant cues vote refute when the snippet still shares claim terms.",
+      "claim": {
+        "id": "clm_vitamin_d",
+        "text": "Vitamin D supplements improve bone density in healthy adults.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "Vitamin D and bone density"
+      },
+      "evidence": [
+        {
+          "id": "ev_vitamin_oa",
+          "title": "Bone density trial",
+          "snippet": "A trial found no significant change: vitamin D supplements do not improve bone density in healthy adults.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_vitamin_oa",
+          "score": 0.66
+        },
+        {
+          "id": "ev_vitamin_ax",
+          "title": "Supplement review",
+          "snippet": "Results show no effect of vitamin D supplements on bone density in healthy adults.",
+          "source": "arxiv",
+          "url": "https://example.test/gold/ev_vitamin_ax",
+          "score": 0.5
+        }
+      ]
+    },
+    {
+      "id": "gold_insufficient_empty",
+      "expected_label": "insufficient",
+      "note": "An empty pack has no relevance, coverage, or stance.",
+      "claim": {
+        "id": "clm_crispr_empty",
+        "text": "CRISPR base editing corrects the sickle-cell mutation in hematopoietic stem cells.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "Base editing"
+      },
+      "evidence": []
+    },
+    {
+      "id": "gold_insufficient_unrelated",
+      "expected_label": "insufficient",
+      "note": "High ranker scores on off-topic snippets do not create a stance vote.",
+      "claim": {
+        "id": "clm_graphs",
+        "text": "Graph neural networks improve node classification accuracy on citation graphs.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "Graph neural networks"
+      },
+      "evidence": [
+        {
+          "id": "ev_graphs_oa",
+          "title": "ImageNet survey",
+          "snippet": "We survey convolutional architectures for image classification on ImageNet.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_graphs_oa",
+          "score": 0.9
+        },
+        {
+          "id": "ev_graphs_ax",
+          "title": "Machine translation",
+          "snippet": "Transformers improve machine translation quality on WMT benchmarks.",
+          "source": "arxiv",
+          "url": "https://example.test/gold/ev_graphs_ax",
+          "score": 0.8
+        }
+      ]
+    },
+    {
+      "id": "gold_insufficient_low_coverage",
+      "expected_label": "insufficient",
+      "note": "One supporting snippet scores coverage 0.5, below the support bar.",
+      "claim": {
+        "id": "clm_lithium",
+        "text": "Lithium reduces relapse risk in bipolar disorder.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "Lithium and relapse"
+      },
+      "evidence": [
+        {
+          "id": "ev_lithium_oa",
+          "title": "Bipolar maintenance",
+          "snippet": "This study supports the finding that lithium reduces relapse risk in bipolar disorder.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_lithium_oa",
+          "score": 0.92
+        }
+      ]
+    },
+    {
+      "id": "gold_insufficient_mixed",
+      "expected_label": "insufficient",
+      "note": "Equal support and refute votes cancel, so stance stays at 0.",
+      "claim": {
+        "id": "clm_exercise",
+        "text": "Regular exercise lowers blood pressure in adults with hypertension.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "Exercise and blood pressure"
+      },
+      "evidence": [
+        {
+          "id": "ev_exercise_oa",
+          "title": "Blood pressure trial",
+          "snippet": "Evidence confirms that regular exercise lowers blood pressure in adults with hypertension.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_exercise_oa",
+          "score": 0.8
+        },
+        {
+          "id": "ev_exercise_s2",
+          "title": "Blood pressure replication",
+          "snippet": "A replication finds that regular exercise does not lower blood pressure in adults with hypertension.",
+          "source": "semantic_scholar",
+          "url": "https://example.test/gold/ev_exercise_s2",
+          "score": 0.8
+        }
+      ]
+    },
+    {
+      "id": "gold_insufficient_weak_refute",
+      "expected_label": "insufficient",
+      "note": "Refute cues are present, but relevance 0.20 is below the 0.35 refute bar.",
+      "claim": {
+        "id": "clm_probiotics",
+        "text": "Probiotics improve irritable bowel symptoms in adults.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "Probiotics"
+      },
+      "evidence": [
+        {
+          "id": "ev_probiotics_oa",
+          "title": "IBS review",
+          "snippet": "A review does not support that probiotics improve irritable bowel symptoms in adults.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_probiotics_oa",
+          "score": 0.2
+        },
+        {
+          "id": "ev_probiotics_ax",
+          "title": "IBS contradiction",
+          "snippet": "Results contradict the claim that probiotics improve irritable bowel symptoms in adults.",
+          "source": "arxiv",
+          "url": "https://example.test/gold/ev_probiotics_ax",
+          "score": 0.2
+        }
+      ]
+    },
+    {
+      "id": "gold_insufficient_below_support_bar",
+      "expected_label": "insufficient",
+      "note": "Support cues and full coverage, but relevance 0.54 is below the 0.55 support bar.",
+      "claim": {
+        "id": "clm_sglt2",
+        "text": "SGLT2 inhibitors reduce heart-failure hospitalization in adults with diabetes.",
+        "source_work_id": "claimforge:gold",
+        "source_title": "SGLT2 inhibitors"
+      },
+      "evidence": [
+        {
+          "id": "ev_sglt2_oa",
+          "title": "Heart-failure outcomes",
+          "snippet": "This study supports that SGLT2 inhibitors reduce heart-failure hospitalization in adults with diabetes.",
+          "source": "openalex",
+          "url": "https://example.test/gold/ev_sglt2_oa",
+          "score": 0.54
+        },
+        {
+          "id": "ev_sglt2_s2",
+          "title": "Hospitalization follow-up",
+          "snippet": "We confirm that SGLT2 inhibitors reduce heart-failure hospitalization in adults with diabetes.",
+          "source": "semantic_scholar",
+          "url": "https://example.test/gold/ev_sglt2_s2",
+          "score": 0.54
+        }
+      ]
+    }
+  ]
+}

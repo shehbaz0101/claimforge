@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
 
-from claimforge.arxiv import ArxivError, build_arxiv_search_url, parse_arxiv_atom, search_arxiv
-from claimforge.http_cache import CachedResponse
+from claimforge.arxiv import (
+    ARXIV_ACCEPT,
+    ARXIV_USER_AGENT,
+    ArxivError,
+    build_arxiv_search_url,
+    parse_arxiv_atom,
+    search_arxiv,
+)
+from claimforge.http_cache import CachedHttpClient, CachedResponse, TransportResponse
 from claimforge.models import EvidenceSource
 
 ATOM = """<?xml version="1.0" encoding="UTF-8"?>
@@ -97,8 +105,50 @@ def test_search_arxiv_parses_atom_from_mocked_http() -> None:
     assert first.work_id is None
     assert first.score is None
     assert second.arxiv_id == "hep-th/9901001"
-    assert "application/atom+xml" in client.headers[0]["Accept"]
+    assert client.headers[0]["Accept"] == ARXIV_ACCEPT
+    assert client.headers[0]["User-Agent"] == ARXIV_USER_AGENT
     assert "export.arxiv.org" in client.urls[0]
+
+
+def test_search_arxiv_sends_user_agent_and_atom_accept() -> None:
+    """Regression: arXiv returned HTTP 406 with an empty body without these."""
+
+    client = FakeClient(_cached(200, ATOM.encode()))
+    search_arxiv(client, "attention is all you need", max_results=1)
+
+    assert client.headers[0]["User-Agent"] == (
+        "ClaimForge/0.1 (mailto:github.com/shehbaz0101/claimforge)"
+    )
+    assert client.headers[0]["Accept"] == "application/atom+xml"
+
+
+def test_cached_client_forwards_arxiv_polite_headers(tmp_path: Path) -> None:
+    class Transport:
+        def __init__(self) -> None:
+            self.headers: list[dict[str, str]] = []
+
+        def get(
+            self,
+            url: str,
+            headers: Mapping[str, str],
+            timeout: float,
+        ) -> TransportResponse:
+            self.headers.append(dict(headers))
+            return TransportResponse(status_code=200, headers={}, body=ATOM.encode())
+
+    transport = Transport()
+    client = CachedHttpClient(
+        tmp_path,
+        transport=transport,
+        sleep=lambda _seconds: None,
+        max_retries=0,
+        jitter=0.0,
+    )
+    evidence = search_arxiv(client, "attention is all you need", max_results=1)
+
+    assert evidence
+    assert transport.headers[0]["User-Agent"] == ARXIV_USER_AGENT
+    assert transport.headers[0]["Accept"] == ARXIV_ACCEPT
 
 
 def test_parse_arxiv_atom_rejects_invalid_xml() -> None:

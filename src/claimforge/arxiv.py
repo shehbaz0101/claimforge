@@ -16,9 +16,13 @@ from claimforge.literature import make_evidence_id, normalize_arxiv_id, normaliz
 from claimforge.models import Evidence, EvidenceSource
 
 ARXIV_ENDPOINT = "https://export.arxiv.org/api/query"
+# arXiv answers some clients with HTTP 406 and an empty body unless the
+# request names a contact and asks for Atom. The mailto form is the contact
+# string arXiv asks API clients to send; it is not an email credential.
+ARXIV_USER_AGENT = "ClaimForge/0.1 (mailto:github.com/shehbaz0101/claimforge)"
+ARXIV_ACCEPT = "application/atom+xml"
 _ATOM = "{http://www.w3.org/2005/Atom}"
 _ARXIV_NS = "{http://arxiv.org/schemas/atom}"
-_ACCEPT = "application/atom+xml, application/xml;q=0.9, */*;q=0.8"
 
 
 class ArxivError(ClaimForgeError):
@@ -84,7 +88,13 @@ def search_arxiv(
         url = build_arxiv_search_url(text, max_results=max_results)
     except ValueError as exc:
         raise ArxivError(str(exc)) from exc
-    response = client.get(url, headers={"Accept": _ACCEPT})
+    response = client.get(
+        url,
+        headers={
+            "User-Agent": ARXIV_USER_AGENT,
+            "Accept": ARXIV_ACCEPT,
+        },
+    )
     if response.status_code != 200:
         snippet = response.body[:200].decode("utf-8", errors="replace")
         raise ArxivError(f"arXiv search returned HTTP {response.status_code}: {snippet}")

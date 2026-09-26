@@ -19,6 +19,8 @@ files, or a directory of JSON fixtures. It does not use the network.
 Exit code 0 unless ``--strict`` and accuracy is below ``--min-accuracy``.
 ``serve`` runs the HTTP API (``GET /health``, ``POST /verify``,
 ``POST /judge``, ``POST /eval``). The same app is ``uvicorn claimforge.api:app``.
+``demo`` verifies the Burgers cassette, judges that ranked pack, and
+scores the gold fixture. It does not use the network or a model.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from claimforge import __version__
+from claimforge.demo import DEFAULT_GOLD_FIXTURE, format_demo_report, run_offline_demo
 from claimforge.eval import (
     DEFAULT_MIN_ACCURACY,
     GoldFixtureError,
@@ -253,6 +256,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="set CLAIMFORGE_OFFLINE=1 for this process so /verify does not use the network",
     )
+
+    demo = subparsers.add_parser(
+        "demo",
+        help="Print an offline verify, judge, and eval report",
+    )
+    demo.add_argument(
+        "--fixture",
+        type=Path,
+        default=DEFAULT_GOLD_FIXTURE,
+        help=f"gold claims JSON to score (default: {DEFAULT_GOLD_FIXTURE})",
+    )
     return parser
 
 
@@ -311,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
         return _eval(parser, args)
     if args.command == "serve":
         return _serve(parser, args)
+    if args.command == "demo":
+        return _demo(parser, args)
     parser.error(f"unknown command {args.command}")
     return 2
 
@@ -500,6 +516,21 @@ def _eval(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             f"accuracy {report.accuracy:.4f} is below {report.min_accuracy:.4f}",
             file=sys.stderr,
         )
+        return 1
+    return 0
+
+
+def _demo(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    try:
+        report = run_offline_demo(args.fixture)
+    except GoldFixtureError as exc:
+        parser.error(str(exc))
+    except ClaimForgeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(format_demo_report(report))
+    if not report.verify.evidence_ids:
+        print("error: offline demo found no evidence for the Burgers claim", file=sys.stderr)
         return 1
     return 0
 

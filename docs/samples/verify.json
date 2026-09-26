@@ -1,0 +1,15 @@
+{
+  "claim_id": "clm_e41efab5af04b726",
+  "label": "support",
+  "confidence": 0.8625,
+  "rationale": "Relevance 0.73 and coverage 1.00 are high, and lexical cues lean support (+1.00).",
+  "evidence_ids": [
+    "ev_burgers_ax",
+    "ev_burgers_oa"
+  ],
+  "rubric_scores": {
+    "relevance": 0.7251,
+    "coverage": 1.0,
+    "stance_lexical": 1.0
+  }
+}

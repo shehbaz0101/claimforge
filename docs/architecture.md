@@ -1,19 +1,16 @@
 # Architecture
 
 ClaimForge checks a scientific claim against the literature and records a
-verdict. Day 1 shipped the project skeleton and a cached OpenAlex client.
-Day 2 adds the claim schema and an abstract extractor. Day 3 retrieves an
-evidence pack from OpenAlex, arXiv, and Semantic Scholar. Day 4 re-scores
-that pack with a local embedding model when it is installed, and with TF-IDF
-cosine otherwise, then keeps the top matches. Day 5 judges that pack with a
-deterministic rubric. An optional LLM judge runs only when both
-`CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` are set. Day 6 scores a
-frozen gold fixture with that rubric and reports accuracy, per-label F1, and
-agreement. The eval path does not use the network. Day 7 serves verify,
-judge, and that eval over HTTP, and the eval CLI accepts a directory of
-fixtures or several files. Day 8 paces catalog hosts, skips a catalog after
-repeated hard failures, rate-limits `POST /verify`, and adds an offline mode
-that never opens a socket.
+verdict. Days 1–5 shipped the cache, the claim schema and abstract extractor,
+multi-source retrieval, ranking, and the rubric judge. Day 6 scores a gold
+fixture with that rubric and reports accuracy, per-label F1, and agreement.
+The eval path does not use the network. Day 7 serves verify, judge, and that
+eval over HTTP, and the eval CLI accepts a directory of fixtures or several
+files. Day 8 paces catalog hosts, skips a catalog after repeated hard
+failures, rate-limits `POST /verify`, and adds an offline mode that never
+opens a socket. Day 9 adds `claimforge demo` and the sample JSON in
+`docs/samples/`. An optional LLM judge runs only when both
+`CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` are set.
 
 ## Pipeline
 
@@ -22,6 +19,7 @@ flowchart LR
   source[Source text] --> extract[Claim extract]
   extract --> claims[Atomic claims]
   claims --> retrieve[Retrieve evidence]
+  cassette[Offline cassette] --> retrieve
   retrieve --> openalex[OpenAlex]
   retrieve --> arxiv[arXiv]
   retrieve --> s2[Semantic Scholar]
@@ -33,7 +31,13 @@ flowchart LR
   claims --> judge[Rubric judge]
   rank --> judge
   judge --> verdict[Support, refute, or insufficient]
+  gold[Gold fixture] --> evalNode[Rubric eval]
+  evalNode --> metrics[Accuracy, F1, agreement]
 ```
+
+Offline verify reads a cassette instead of the catalogs. Eval scores a gold
+fixture with the rubric and does not retrieve. The HTTP API is a separate
+front for the same verify, judge, and eval functions.
 
 | Stage | State | Role |
 | --- | --- | --- |
@@ -48,6 +52,7 @@ flowchart LR
 | Judge | Shipped (Day 5) | Rubric verdict over the top-k pack. Optional LLM when both key and model are set. |
 | Eval | Shipped (Day 6) | Score frozen gold fixtures with the rubric. One file, several files, or a directory. Accuracy, per-label F1, and agreement. No network. |
 | API | Shipped (Day 7) | FastAPI: `GET /health`, `POST /verify`, `POST /judge`, `POST /eval`. |
+| Demo | Shipped (Day 9) | `claimforge demo` prints verify, judge, and eval offline. |
 
 ## HTTP cache
 
@@ -419,7 +424,9 @@ CLAIMFORGE_OFFLINE=1 claimforge verify --text "Physics-informed neural networks 
 claimforge retrieve-evidence --offline --text "Physics-informed neural networks reduce the error on the Burgers equation." --ranker lexical
 ```
 
-## Planned components
+## Later
 
-- **Demo polish (Day 9).** Sample outputs, a short demo path, and pre-commit lint if it is still missing.
+Day 10 freezes this surface, tags `v0.1.0`, writes `PROJECT_STATUS.md`, and
+queues the next proposal. The Day 9 change does not tag a release.
+
 - **Evidence store.** Hold the passages the judge is allowed to see.

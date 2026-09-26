@@ -13,5 +13,6 @@ cache bodies or secrets here.
 
 `data/fixtures/cassettes/` holds offline evidence packs for `verify` and
 `retrieve-evidence`. They are used only when `CLAIMFORGE_OFFLINE=1` or
-`--offline` is set. `burgers.json` is a synthetic pack for the README claim.
-Eval does not read this directory. Do not put API keys in a cassette.
+`--offline` is set. `burgers.json` is a synthetic pack for the README claim
+and for `claimforge demo`. Eval does not read this directory. Do not put
+API keys in a cassette.

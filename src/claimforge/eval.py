@@ -1,8 +1,10 @@
-"""Score a frozen gold fixture with the rubric judge.
+"""Score frozen gold fixtures with the rubric judge.
 
-The harness reads claims and inline evidence packs from a JSON file. It does
-not retrieve literature and it does not call a model. ``CLAIMFORGE_LLM_*`` is
-ignored. Metrics are exact label match against ``expected_label``.
+The harness reads claims and inline evidence packs from JSON. A path may be
+one file, several files, or a directory of ``*.json`` fixtures. Directories
+are not recursive. It does not retrieve literature and it does not call a
+model. ``CLAIMFORGE_LLM_*`` is ignored. Metrics are exact label match against
+``expected_label``.
 
 * ``accuracy`` is correct labels divided by the number of items.
 * ``agreement_rate`` is that same fraction. With one judge and one gold label
@@ -151,7 +153,7 @@ def parse_min_accuracy(value: float) -> float:
 
 
 def load_gold_fixture(path: Path | str) -> tuple[GoldItem, ...]:
-    """Load gold claims. Packs are inline. This function does no I/O except the file read."""
+    """Load one gold-claims file. Packs are inline. No I/O except the file read."""
 
     fixture_path = Path(path)
     try:
@@ -160,6 +162,11 @@ def load_gold_fixture(path: Path | str) -> tuple[GoldItem, ...]:
         raise GoldFixtureError(f"could not read gold fixture: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise GoldFixtureError(f"gold fixture is not valid JSON: {exc}") from exc
+    return parse_gold_document(payload)
+
+
+def parse_gold_document(payload: object) -> tuple[GoldItem, ...]:
+    """Parse a gold document or a bare list of items. Does not touch the network."""
 
     if isinstance(payload, list):
         raw_items: object = payload
@@ -185,6 +192,66 @@ def load_gold_fixture(path: Path | str) -> tuple[GoldItem, ...]:
         seen.add(item.id)
         items.append(item)
     return tuple(items)
+
+
+def expand_fixture_paths(paths: Sequence[Path | str]) -> tuple[Path, ...]:
+    """Turn files and directories into the JSON files a batch should score.
+
+    A directory contributes its ``*.json`` files, sorted by name, and nothing
+    nested below it. Other files in that directory are skipped. A path that
+    is not a directory is kept as given, including a missing file, so the
+    loader can report the read error.
+    """
+
+    if not paths:
+        raise GoldFixtureError("no gold fixtures were given")
+    files: list[Path] = []
+    for raw in paths:
+        path = Path(raw)
+        if path.is_dir():
+            found = _json_files_in(path)
+            if not found:
+                raise GoldFixtureError(f"gold fixture directory has no JSON files: {path}")
+            files.extend(found)
+            continue
+        files.append(path)
+    return tuple(files)
+
+
+def load_gold_fixtures(paths: Sequence[Path | str]) -> tuple[GoldItem, ...]:
+    """Load one file, several files, or every JSON file in a directory.
+
+    Item ids must be unique across the batch. One file matches
+    :func:`load_gold_fixture`.
+    """
+
+    items: list[GoldItem] = []
+    seen: set[str] = set()
+    for path in expand_fixture_paths(paths):
+        for item in load_gold_fixture(path):
+            if item.id in seen:
+                raise GoldFixtureError(f"duplicate gold id: {item.id}")
+            seen.add(item.id)
+            items.append(item)
+    return tuple(items)
+
+
+def describe_fixtures(paths: Sequence[Path | str]) -> str:
+    """Label a batch for the metrics report. One path stays a single string."""
+
+    labels = [str(path) for path in paths]
+    if len(labels) == 1:
+        return labels[0]
+    return ", ".join(labels)
+
+
+def _json_files_in(directory: Path) -> list[Path]:
+    files = [
+        item
+        for item in directory.iterdir()
+        if item.is_file() and item.suffix.lower() == ".json" and not item.name.startswith(".")
+    ]
+    return sorted(files, key=lambda item: item.name)
 
 
 def evaluate_gold(

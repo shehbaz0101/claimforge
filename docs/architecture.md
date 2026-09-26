@@ -9,7 +9,9 @@ cosine otherwise, then keeps the top matches. Day 5 judges that pack with a
 deterministic rubric. An optional LLM judge runs only when both
 `CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` are set. Day 6 scores a
 frozen gold fixture with that rubric and reports accuracy, per-label F1, and
-agreement. The eval path does not use the network.
+agreement. The eval path does not use the network. Day 7 serves verify,
+judge, and that eval over HTTP, and the eval CLI accepts a directory of
+fixtures or several files.
 
 ## Pipeline
 
@@ -38,7 +40,8 @@ flowchart LR
 | Rank | Shipped (Day 4) | Re-score the pack with embedding cosine or TF-IDF cosine and keep top-k. |
 | HTTP disk cache | Shipped (Day 1) | Cache GET responses under `data/cache` and retry 429 / transient 5xx. |
 | Judge | Shipped (Day 5) | Rubric verdict over the top-k pack. Optional LLM when both key and model are set. |
-| Eval | Shipped (Day 6) | Score a frozen gold fixture with the rubric. Accuracy, per-label F1, and agreement. No network. |
+| Eval | Shipped (Day 6) | Score frozen gold fixtures with the rubric. One file, several files, or a directory. Accuracy, per-label F1, and agreement. No network. |
+| API | Shipped (Day 7) | FastAPI: `GET /health`, `POST /verify`, `POST /judge`, `POST /eval`. |
 
 ## HTTP cache
 
@@ -260,13 +263,82 @@ claimforge eval --fixture tests/fixtures/gold_claims.json --strict
 claimforge eval --fixture tests/fixtures/gold_claims.json --strict --min-accuracy 0.8
 ```
 
+`--fixture` takes one or more paths. A directory contributes each `*.json`
+file in that directory, sorted by file name. It does not walk subdirectories.
+Other files are ignored. A directory with no JSON files is an error (exit 2).
+Several files, or repeated `--fixture` flags, are one batch: items are
+concatenated in the order given, and a directory's files stay in name order
+inside that path. Gold ids must be unique across the batch. The report's
+`fixture` field is the single path you passed, or the paths joined by `, `.
+One file is unchanged: `fixture` is that path string, and the metrics are
+the metrics for that file.
+
+```bash
+claimforge eval --fixture tests/fixtures
+claimforge eval --fixture a.json b.json
+claimforge eval --fixture a.json --fixture b.json
+```
+
 ```mermaid
 flowchart LR
   fixture[Gold fixture] --> rubric[Rubric judge]
   rubric --> metrics[Accuracy, F1, agreement]
 ```
 
+## HTTP API
+
+`claimforge.api:app` is a FastAPI app. `claimforge serve` runs it with
+uvicorn on `127.0.0.1:8000`. `uvicorn claimforge.api:app` is the same app.
+`/docs` is the generated OpenAPI UI. FastAPI and uvicorn are install
+dependencies, so `pip install -e ".[dev]"` is enough. Tests use
+`fastapi.testclient.TestClient` and do not bind a port.
+
+| Method | Path | Network | Body |
+| --- | --- | --- | --- |
+| `GET` | `/health` | none | `{"status": "ok", "version": "..."}` |
+| `POST` | `/verify` | catalogs, same as `claimforge verify` | `{"text", optional "ranker", "top_k", "per_source", "cache_dir"}` |
+| `POST` | `/judge` | none | `{"claim", "evidence"}` |
+| `POST` | `/eval` | none; local file read when `fixture` is set | `{"fixture"}` or `{"items"}`, optional `min_accuracy` |
+
+`/verify` builds a claim with `claim_from_text`, calls `retrieve_evidence`,
+then `judge_claim`. `ranker` is `auto` (default), `lexical`, or `embeddings`.
+`top_k` and `per_source` are 1–25 and default to 8. `CLAIMFORGE_OPENALEX_MAILTO`
+and `CLAIMFORGE_S2_API_KEY` are read the same way as the CLI. The response
+body is one verdict object. `X-ClaimForge-Ranker` names the ranker. A missing
+embedding extra is HTTP 422 and does not call a catalog. Every catalog
+failing is HTTP 502. A bad body is HTTP 422.
+
+`/judge` calls `judge_claim` on the posted claim and evidence list. An empty
+list is a valid pack. It does not call `retrieve_evidence`. The optional LLM
+judge still follows the Day 5 gate. Unset `CLAIMFORGE_LLM_*` stays on the
+rubric.
+
+`/eval` calls `evaluate_gold`, which always uses `rubric_verdict`. `fixture`
+is one JSON file or a directory of JSON fixtures, the same expansion as the
+CLI. `items` is a list of gold objects, the same schema as a fixture file.
+Send one of those, not both. The response is the metrics object, including
+`meets_threshold`. Accuracy below `min_accuracy` stays HTTP 200. `--strict`
+is only a CLI exit code. A bad fixture is HTTP 422. `fixture` reads a path
+on the server machine. The process is meant to bind to localhost.
+
+```bash
+claimforge serve
+uvicorn claimforge.api:app --host 127.0.0.1 --port 8000
+```
+
+```mermaid
+flowchart LR
+  client[HTTP client] --> health[GET /health]
+  client --> verify[POST /verify]
+  client --> judge[POST /judge]
+  client --> evalApi[POST /eval]
+  verify --> retrieve[Retrieve and rank]
+  retrieve --> judgeFn[Judge]
+  judge --> judgeFn
+  evalApi --> rubric[Rubric judge]
+```
+
 ## Planned components
 
-- **API (Day 7).** A FastAPI service in front of extract, retrieve, and judge, plus a polished batch-eval CLI surface on top of this command.
+- **Hardening (Day 8).** Rate limits, fallbacks, and offline fixture mode polish.
 - **Evidence store.** Hold the passages the judge is allowed to see.

@@ -12,7 +12,9 @@ the top matches. Day 5 judges the pack with a rubric and records support,
 refute, or insufficient evidence. The same LLM variables can replace that
 rubric. Leave them unset to stay offline. Day 6 scores a frozen gold fixture
 with the rubric and prints accuracy, per-label F1, and agreement. That
-command does not use the network.
+command does not use the network. Day 7 serves the same verify and judge
+paths over HTTP, and `claimforge eval` can score a directory of fixtures
+or several files in one run.
 
 ## Why this shape
 
@@ -30,6 +32,7 @@ Day 1 implements the cache and a works search. Day 2 implements claim
 extraction from abstracts. Day 3 implements multi-source evidence retrieval.
 Day 4 ranks the pack with a local embedding model or with TF-IDF cosine.
 Day 5 judges that pack. Day 6 scores a gold fixture against that judge.
+Day 7 is a small FastAPI service in front of verify, judge, and eval.
 See [docs/architecture.md](docs/architecture.md).
 
 ```mermaid
@@ -188,6 +191,68 @@ claimforge eval --fixture tests/fixtures/gold_claims.json --strict
 claimforge eval --fixture tests/fixtures/gold_claims.json --format json
 ```
 
+`--fixture` also accepts several JSON files, repeated flags, or a directory.
+A directory is scored as one batch: every `*.json` file in that directory,
+not in subdirectories. Other files are ignored. Item ids must be unique
+across the batch. One file behaves as before.
+
+```bash
+claimforge eval --fixture tests/fixtures
+claimforge eval --fixture path/one.json path/two.json
+claimforge eval --fixture path/one.json --fixture path/two.json
+```
+
+## HTTP API
+
+`claimforge serve` runs the API on `127.0.0.1:8000`. The same app is
+`uvicorn claimforge.api:app`. Interactive docs are at `/docs`. No API key
+is required. `/verify` calls the catalogs through the disk cache. `/judge`
+and `/eval` do not.
+
+```bash
+claimforge serve
+uvicorn claimforge.api:app --host 127.0.0.1 --port 8000
+```
+
+```bash
+curl -s http://127.0.0.1:8000/health
+```
+
+```bash
+curl -s http://127.0.0.1:8000/verify \
+  -H 'content-type: application/json' \
+  -d '{"text":"Physics-informed neural networks reduce the error on the Burgers equation.","ranker":"lexical"}'
+```
+
+`ranker` is optional (`auto`, `lexical`, or `embeddings`). `auto` is the
+default, same as the CLI. `top_k` and `per_source` default to 8. The body
+is one verdict object. The ranker name is the `X-ClaimForge-Ranker` header.
+
+To score a pack you already have, without searching:
+
+```bash
+curl -s http://127.0.0.1:8000/judge \
+  -H 'content-type: application/json' \
+  -d '{"claim":{"id":"clm_burgers","text":"Physics-informed neural networks reduce the error on the Burgers equation.","source_work_id":"claimforge:text","source_title":""},"evidence":[]}'
+```
+
+An empty pack is insufficient. A saved evidence list uses the same fields
+as `claimforge judge`.
+
+Offline eval, from a fixture path or from inline items:
+
+```bash
+curl -s http://127.0.0.1:8000/eval \
+  -H 'content-type: application/json' \
+  -d '{"fixture":"tests/fixtures/gold_claims.json"}'
+```
+
+The body is the same metrics object as `claimforge eval`. A path may be one
+JSON file or a directory of JSON fixtures. Pass `items` instead of `fixture`
+to score objects inline. A score below `min_accuracy` is still HTTP 200;
+`meets_threshold` is in the JSON. `--strict` remains a CLI exit code.
+`/eval` always uses the rubric.
+
 ## Tests
 
 Unit tests mock the HTTP transport and score with the lexical ranker. They
@@ -218,7 +283,11 @@ pytest -m integration
 - Gold eval scores the frozen fixture with the rubric. Passages are
   synthetic. The set locks this judge; it is not a human-annotated corpus.
   `--strict` exits 1 when accuracy is below 1.0. Without `--strict` the
-  command still prints metrics and exits 0.
+  command still prints metrics and exits 0. A directory of fixtures is one
+  batch. Ids must stay unique across those files.
+- The HTTP API has no rate limit and no auth. `/verify` can call OpenAlex,
+  arXiv, and Semantic Scholar. `/eval` with `fixture` reads a local path.
+  Bind it to localhost unless you mean to expose it. Hardening is Day 8.
 - The disk cache has no TTL and no size cap. Delete `data/cache` to refresh.
 - Retries cover 429, 500, 502, 503, 504, and connection failures. Other HTTP
   statuses are returned to the caller.

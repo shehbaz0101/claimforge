@@ -8,6 +8,19 @@ retrieve. ``POST /eval`` scores inline gold items, one JSON fixture, or a
 directory of JSON fixtures with the rubric. It does not retrieve and it
 does not call a model.
 
+``POST /verify`` is the only rate-limited route. The limit is a fixed window
+in this process: 60 requests per 60 seconds unless
+``CLAIMFORGE_VERIFY_RATE_LIMIT`` and ``CLAIMFORGE_VERIFY_RATE_WINDOW_S``
+say otherwise. ``0`` disables it. A rejected call is HTTP 429 with a JSON
+body and a ``Retry-After`` header. ``/health``, ``/judge``, and ``/eval``
+are not limited.
+
+A catalog failure does not crash the process. One failed catalog is dropped.
+If every catalog fails, ``/verify`` returns HTTP 502 JSON. Offline mode
+(``CLAIMFORGE_OFFLINE=1`` or ``claimforge serve --offline``) never opens a
+catalog connection: a cassette or a warm cache is judged, and a miss is an
+insufficient verdict with HTTP 200.
+
 Run ``uvicorn claimforge.api:app`` or ``claimforge serve``. The server
 binds to ``127.0.0.1:8000`` from the CLI. ``/verify`` uses the same catalog
 clients as ``claimforge verify``. ``/judge`` and ``/eval`` do not open a
@@ -16,11 +29,18 @@ catalog connection.
 
 from __future__ import annotations
 
+import logging
+import math
 import os
+import threading
+import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
+from starlette.responses import Response as StarletteResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from claimforge import __version__
@@ -38,15 +58,86 @@ from claimforge.judge import claim_from_text, judge_claim
 from claimforge.models import Claim, Evidence, Verdict
 from claimforge.rank import RankerError, active_ranker_name
 from claimforge.retrieve import DEFAULT_PER_SOURCE, DEFAULT_TOP_K, retrieve_evidence
+from claimforge.settings import verify_rate_limit, verify_rate_window_s
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CACHE_DIR = Path("data/cache")
 RANKER_HEADER = "X-ClaimForge-Ranker"
+VERIFY_RATE_DETAIL = "rate limit exceeded for /verify"
+
+
+class FixedWindowLimiter:
+    """Count ``POST /verify`` calls inside one time window for this process.
+
+    The window and the limit are read from the environment on each check.
+    Defaults are 60 requests per 60 seconds. A limit of 0 allows every call.
+    """
+
+    def __init__(self, clock: Callable[[], float] | None = None) -> None:
+        self._clock = clock if clock is not None else time.monotonic
+        self._lock = threading.Lock()
+        self._window_start = 0.0
+        self._count = 0
+
+    def reset(self) -> None:
+        """Start a fresh window. Tests call this so cases do not share a count."""
+
+        with self._lock:
+            self._window_start = 0.0
+            self._count = 0
+
+    def decide(self) -> tuple[bool, float]:
+        """Return whether the call is allowed and, if not, seconds to wait."""
+
+        limit = verify_rate_limit()
+        window = verify_rate_window_s()
+        if limit <= 0:
+            return True, 0.0
+        now = self._clock()
+        with self._lock:
+            if self._window_start <= 0.0 or now - self._window_start >= window:
+                self._window_start = now
+                self._count = 0
+            if self._count >= limit:
+                retry = max(0.0, window - (now - self._window_start))
+                return False, retry
+            self._count += 1
+            return True, 0.0
+
+
+VERIFY_LIMITER = FixedWindowLimiter()
 
 app = FastAPI(
     title="ClaimForge",
     version=__version__,
     description="Verify a scientific claim and score frozen gold fixtures.",
 )
+
+
+@app.middleware("http")
+async def limit_verify_requests(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[StarletteResponse]],
+) -> StarletteResponse:
+    """Reject ``POST /verify`` once the in-process window is full.
+
+    Other routes are not counted. The body is JSON, including
+    ``retry_after_s``. ``Retry-After`` is the same wait in whole seconds.
+    """
+
+    if request.method == "POST" and request.url.path.rstrip("/") == "/verify":
+        allowed, retry_after = VERIFY_LIMITER.decide()
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": VERIFY_RATE_DETAIL,
+                    "retry_after_s": round(retry_after, 3),
+                },
+                headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+            )
+    return await call_next(request)
 
 
 class HealthResponse(BaseModel):
@@ -150,6 +241,9 @@ def verify(body: VerifyRequest, response: Response) -> dict[str, object]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ClaimForgeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("verify failed")
+        raise HTTPException(status_code=502, detail="evidence retrieval failed") from exc
     verdict = judge_claim(claim, evidence)
     response.headers[RANKER_HEADER] = active_ranker_name(body.ranker)
     return verdict.to_json_dict()

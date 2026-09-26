@@ -1,0 +1,20 @@
+{
+  "id": "clm_burgers_offline",
+  "text": "Physics-informed neural networks reduce the error on the Burgers equation.",
+  "evidence": [
+    {
+      "id": "ev_burgers_oa",
+      "title": "PINNs on Burgers",
+      "snippet": "This study supports the finding that physics-informed neural networks reduce the error on the Burgers equation.",
+      "source": "openalex",
+      "url": "https://example.test/cassettes/ev_burgers_oa"
+    },
+    {
+      "id": "ev_burgers_ax",
+      "title": "Burgers benchmarks",
+      "snippet": "We confirm that physics-informed neural networks reduce the error on the Burgers equation.",
+      "source": "arxiv",
+      "url": "https://example.test/cassettes/ev_burgers_ax"
+    }
+  ]
+}

@@ -11,7 +11,9 @@ deterministic rubric. An optional LLM judge runs only when both
 frozen gold fixture with that rubric and reports accuracy, per-label F1, and
 agreement. The eval path does not use the network. Day 7 serves verify,
 judge, and that eval over HTTP, and the eval CLI accepts a directory of
-fixtures or several files.
+fixtures or several files. Day 8 paces catalog hosts, skips a catalog after
+repeated hard failures, rate-limits `POST /verify`, and adds an offline mode
+that never opens a socket.
 
 ## Pipeline
 
@@ -39,6 +41,10 @@ flowchart LR
 | Retrieve | Shipped (Day 3) | Query OpenAlex, arXiv, and Semantic Scholar. Deduplicate catalog copies. |
 | Rank | Shipped (Day 4) | Re-score the pack with embedding cosine or TF-IDF cosine and keep top-k. |
 | HTTP disk cache | Shipped (Day 1) | Cache GET responses under `data/cache` and retry 429 / transient 5xx. |
+| Host interval | Shipped (Day 8) | Optional minimum gap between outbound GETs to one host. Cache hits do not wait. |
+| Source skip | Shipped (Day 8) | After N consecutive hard failures in this process, skip that catalog. |
+| Offline mode | Shipped (Day 8) | Cassette or warm cache only. A miss is an empty pack, then insufficient. |
+| Verify rate limit | Shipped (Day 8) | In-process fixed window on `POST /verify`. HTTP 429 JSON. |
 | Judge | Shipped (Day 5) | Rubric verdict over the top-k pack. Optional LLM when both key and model are set. |
 | Eval | Shipped (Day 6) | Score frozen gold fixtures with the rubric. One file, several files, or a directory. Accuracy, per-label F1, and agreement. No network. |
 | API | Shipped (Day 7) | FastAPI: `GET /health`, `POST /verify`, `POST /judge`, `POST /eval`. |
@@ -60,6 +66,14 @@ standard-library client.
   write.
 - Other statuses, including 404, are returned to the caller and not cached.
 - A corrupt cache file is ignored and the request is sent again.
+- `CLAIMFORGE_HTTP_MIN_INTERVAL_S` is an optional minimum gap, in seconds,
+  between outbound GETs to the same host. Unset or `0` adds no delay. The
+  gap is shared by every client in the process, so `claimforge serve` paces
+  OpenAlex, arXiv, and Semantic Scholar across requests. A cache hit does
+  not wait and does not count. Retries wait again before the next attempt.
+- Offline mode does not call the transport. A cache hit is returned. A cache
+  miss raises `OfflineCacheMiss`. That error is a soft failure named
+  `offline`. It does not increment the source-skip counter.
 
 OpenAlex needs no API key. The client sends a project User-Agent. If
 `CLAIMFORGE_OPENALEX_MAILTO` is set, the works search adds it as `mailto` so
@@ -120,10 +134,34 @@ returns the top evidence after merging three catalogs. Every request uses
 | arXiv | Free, no key | `GET https://export.arxiv.org/api/query` (Atom XML). Content terms are AND-ed. |
 | Semantic Scholar | Secondary | `GET https://api.semanticscholar.org/graph/v1/paper/search`, unauthenticated. Optional `CLAIMFORGE_S2_API_KEY` is sent as `x-api-key` and is never put in the URL or required in CI. |
 
-Semantic Scholar answers HTTP 401, 403, and 429 with an empty contribution so
-a rate limit does not fail the command or CI. If OpenAlex or arXiv fails, the
-other sources are still returned. The command exits 1 only when every source
-fails before it can answer.
+Semantic Scholar answers HTTP 401 and 403 (`rejected`) and HTTP 429
+(`rate_limited`) with an empty contribution so a rate limit does not fail
+the command or CI. Those empty contributions are not hard failures.
+
+Hard failures are classified and then skipped for that catalog only:
+
+| Kind | When |
+| --- | --- |
+| `rate_limited` | HTTP 429 that exhausted retries, or a message that names HTTP 429. |
+| `rejected` | HTTP 401 or 403 that is not already the Semantic Scholar empty contribution. |
+| `unavailable` | Timeout, connection error, or HTTP 500, 502, 503, or 504. |
+| `invalid_response` | Any other error, including a bad payload or an unexpected exception. |
+| `offline` | Cache miss while offline mode is on. |
+
+An unexpected exception in one catalog is `invalid_response`. The other
+catalogs are still returned. `verify` and `serve` stay up. The CLI exits 1,
+and `POST /verify` returns HTTP 502, only when every catalog fails in online
+mode. Offline mode returns an empty pack instead of that error.
+
+After `CLAIMFORGE_SOURCE_FAILURE_LIMIT` consecutive hard failures for one
+catalog in this process (default 3), later retrievals skip that catalog for
+the rest of the process. In a multi-claim `verify` or `retrieve-evidence`
+command, that is the rest of the call. In `claimforge serve`, the skip lasts
+until the process exits. A successful response resets the streak before the
+limit is reached. `offline` misses do not count. Semantic Scholar 401, 403,
+and 429 do not count, because that client already turned them into an empty
+contribution. The counter is memory only. `0` disables the skip. Restart the
+process to contact a skipped catalog again.
 
 Duplicates collapse when they share a DOI or an arXiv id (version suffixes
 ignored). Identifiers are copied onto one record. OpenAlex wins the `source`
@@ -296,7 +334,7 @@ dependencies, so `pip install -e ".[dev]"` is enough. Tests use
 | Method | Path | Network | Body |
 | --- | --- | --- | --- |
 | `GET` | `/health` | none | `{"status": "ok", "version": "..."}` |
-| `POST` | `/verify` | catalogs, same as `claimforge verify` | `{"text", optional "ranker", "top_k", "per_source", "cache_dir"}` |
+| `POST` | `/verify` | catalogs, or none when offline | `{"text", optional "ranker", "top_k", "per_source", "cache_dir"}` |
 | `POST` | `/judge` | none | `{"claim", "evidence"}` |
 | `POST` | `/eval` | none; local file read when `fixture` is set | `{"fixture"}` or `{"items"}`, optional `min_accuracy` |
 
@@ -306,7 +344,22 @@ then `judge_claim`. `ranker` is `auto` (default), `lexical`, or `embeddings`.
 and `CLAIMFORGE_S2_API_KEY` are read the same way as the CLI. The response
 body is one verdict object. `X-ClaimForge-Ranker` names the ranker. A missing
 embedding extra is HTTP 422 and does not call a catalog. Every catalog
-failing is HTTP 502. A bad body is HTTP 422.
+failing in online mode is HTTP 502 JSON. An unexpected retrieval exception
+is also HTTP 502 JSON (`evidence retrieval failed`), not an unhandled crash.
+A bad body is HTTP 422.
+
+`POST /verify` is the only rate-limited route. The limiter is a fixed window
+in this process. The default is 60 requests per 60 seconds, which is enough
+for local use. `CLAIMFORGE_VERIFY_RATE_LIMIT` is the count. `0` disables the
+limit. `CLAIMFORGE_VERIFY_RATE_WINDOW_S` is the window length (default 60).
+When the window is full the response is HTTP 429:
+
+```json
+{"detail": "rate limit exceeded for /verify", "retry_after_s": 60.0}
+```
+
+`Retry-After` is that wait in whole seconds. `/health`, `/judge`, and
+`/eval` are not counted. The limiter resets when the process exits.
 
 `/judge` calls `judge_claim` on the posted claim and evidence list. An empty
 list is a valid pack. It does not call `retrieve_evidence`. The optional LLM
@@ -338,7 +391,35 @@ flowchart LR
   evalApi --> rubric[Rubric judge]
 ```
 
+## Offline mode
+
+`CLAIMFORGE_OFFLINE=1`, or `--offline` on `verify`, `retrieve-evidence`, and
+`serve`, forces no network. `serve --offline` exports the variable before
+uvicorn starts so a reload child sees it.
+
+`verify` and `retrieve-evidence` then use, in order:
+
+1. A cassette whose `id` matches the claim id, or whose `text` matches the
+   claim text after case and whitespace are folded. Files are `*.json` in
+   `CLAIMFORGE_FIXTURE_DIR` (default `data/fixtures/cassettes`), not in
+   subdirectories. The shipped example is `burgers.json`. Passages are
+   synthetic. A bad file is skipped.
+2. The HTTP disk cache, for a claim the cassette does not cover. A hit is
+   used. A miss does not call the host.
+3. An empty pack when neither source has the claim. `retrieve-evidence`
+   prints `[]` and exits 0. `verify` and `POST /verify` judge that pack and
+   return `insufficient` with HTTP 200. They do not exit 1 and they do not
+   return HTTP 502 for the miss.
+
+Online retrieval does not read cassettes. `claimforge eval` still reads gold
+fixtures, not cassettes, and still does not search.
+
+```bash
+CLAIMFORGE_OFFLINE=1 claimforge verify --text "Physics-informed neural networks reduce the error on the Burgers equation." --ranker lexical
+claimforge retrieve-evidence --offline --text "Physics-informed neural networks reduce the error on the Burgers equation." --ranker lexical
+```
+
 ## Planned components
 
-- **Hardening (Day 8).** Rate limits, fallbacks, and offline fixture mode polish.
+- **Demo polish (Day 9).** Sample outputs, a short demo path, and pre-commit lint if it is still missing.
 - **Evidence store.** Hold the passages the judge is allowed to see.

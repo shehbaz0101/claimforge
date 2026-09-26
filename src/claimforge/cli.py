@@ -7,6 +7,10 @@ re-scores the pack with the active ranker, and prints evidence as JSON.
 The ranker name is written to stderr. Scores on stdout are that ranker's
 cosine similarity.
 ``verify`` runs that retrieval and then the judge, and prints a verdict.
+``--offline`` on ``verify`` and ``retrieve-evidence`` does not use the
+network. A cassette under ``data/fixtures/cassettes`` or a warm disk cache
+is the pack. If neither has the claim, retrieve prints an empty list and
+verify prints an insufficient verdict.
 ``judge`` scores a claim against a saved evidence file and does not use
 the network.
 ``eval`` scores gold fixtures with the rubric and prints accuracy,
@@ -50,6 +54,7 @@ from claimforge.openalex import (
 )
 from claimforge.rank import active_ranker_name
 from claimforge.retrieve import DEFAULT_PER_SOURCE, DEFAULT_TOP_K, retrieve_evidence
+from claimforge.settings import pop_offline, push_offline
 
 DEFAULT_CACHE_DIR = Path("data/cache")
 
@@ -112,6 +117,14 @@ def build_parser() -> argparse.ArgumentParser:
             "installed, otherwise TF-IDF cosine (default: auto)"
         ),
     )
+    retrieve.add_argument(
+        "--offline",
+        action="store_true",
+        help=(
+            "do not use the network; read a cassette pack or the disk cache, "
+            "or return an empty pack"
+        ),
+    )
 
     verify = subparsers.add_parser(
         "verify",
@@ -149,6 +162,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "auto uses a local embedding model when sentence-transformers is "
             "installed, otherwise TF-IDF cosine (default: auto)"
+        ),
+    )
+    verify.add_argument(
+        "--offline",
+        action="store_true",
+        help=(
+            "do not use the network; judge a cassette pack or a cached pack, "
+            "or record insufficient when neither exists"
         ),
     )
 
@@ -226,6 +247,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--reload",
         action="store_true",
         help="reload when source files change",
+    )
+    serve.add_argument(
+        "--offline",
+        action="store_true",
+        help="set CLAIMFORGE_OFFLINE=1 for this process so /verify does not use the network",
     )
     return parser
 
@@ -350,6 +376,20 @@ def _retrieve_evidence(parser: argparse.ArgumentParser, args: argparse.Namespace
         targets = _retrieval_targets(args)
     except ValueError as exc:
         parser.error(str(exc))
+    token = push_offline(True) if args.offline else None
+    try:
+        return _retrieve_evidence_online(args, targets, mailto, s2_api_key)
+    finally:
+        if token is not None:
+            pop_offline(token)
+
+
+def _retrieve_evidence_online(
+    args: argparse.Namespace,
+    targets: list[Claim | None],
+    mailto: str | None,
+    s2_api_key: str | None,
+) -> int:
     client = CachedHttpClient(cache_dir=args.cache_dir)
     packs: list[tuple[Claim | None, list[dict[str, object]]]] = []
     for claim in targets:
@@ -365,6 +405,9 @@ def _retrieve_evidence(parser: argparse.ArgumentParser, args: argparse.Namespace
                 embedding_cache_dir=args.cache_dir / "embeddings",
             )
         except ClaimForgeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         packs.append((claim, dump_evidence(evidence)))
@@ -392,27 +435,35 @@ def _verify(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         claims = _verify_claims(args)
     except ValueError as exc:
         parser.error(str(exc))
-    client = CachedHttpClient(cache_dir=args.cache_dir)
-    verdicts: list[Verdict] = []
-    for claim in claims:
-        try:
-            evidence = retrieve_evidence(
-                client,
-                claim,
-                per_source=args.per_source,
-                top_k=args.top_k,
-                mailto=mailto,
-                s2_api_key=s2_api_key,
-                ranker=args.ranker,
-                embedding_cache_dir=args.cache_dir / "embeddings",
-            )
-        except ClaimForgeError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
-        verdicts.append(judge_claim(claim, evidence))
-    print(f"ranker: {active_ranker_name(args.ranker)}", file=sys.stderr)
-    _print_verdicts(verdicts)
-    return 0
+    token = push_offline(True) if args.offline else None
+    try:
+        client = CachedHttpClient(cache_dir=args.cache_dir)
+        verdicts: list[Verdict] = []
+        for claim in claims:
+            try:
+                evidence = retrieve_evidence(
+                    client,
+                    claim,
+                    per_source=args.per_source,
+                    top_k=args.top_k,
+                    mailto=mailto,
+                    s2_api_key=s2_api_key,
+                    ranker=args.ranker,
+                    embedding_cache_dir=args.cache_dir / "embeddings",
+                )
+            except ClaimForgeError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            except Exception as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            verdicts.append(judge_claim(claim, evidence))
+        print(f"ranker: {active_ranker_name(args.ranker)}", file=sys.stderr)
+        _print_verdicts(verdicts)
+        return 0
+    finally:
+        if token is not None:
+            pop_offline(token)
 
 
 def _judge(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
@@ -459,6 +510,8 @@ def _serve(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         parser.error("--host must not be empty")
     if args.port < 1 or args.port > 65535:
         parser.error("--port must be between 1 and 65535")
+    if args.offline:
+        os.environ["CLAIMFORGE_OFFLINE"] = "1"
     try:
         import uvicorn
     except ImportError:

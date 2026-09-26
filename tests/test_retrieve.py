@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from claimforge.circuit import SourceCircuit, reset_process_source_circuit
 from claimforge.cli import main
 from claimforge.http_cache import (
     CachedHttpClient,
@@ -22,6 +23,7 @@ from claimforge.openalex import EVIDENCE_SELECT
 from claimforge.rank import RankerError
 from claimforge.retrieve import (
     EvidenceRetrievalError,
+    classify_provider_failure,
     evidence_from_openalex_record,
     merge_evidence,
     retrieve_evidence,
@@ -600,6 +602,133 @@ def test_embeddings_ranker_fails_before_any_catalog_request(
     with pytest.raises(RankerError, match="sentence-transformers"):
         retrieve_evidence(client, CLAIM_TEXT, per_source=1, top_k=1, ranker="embeddings")
     assert client.urls == []
+
+
+def test_unexpected_provider_error_keeps_the_other_sources() -> None:
+    client = FakeCatalog(_routes(openalex=RuntimeError("boom")))
+    evidence = retrieve_evidence(client, CLAIM_TEXT, per_source=2, top_k=5, ranker="lexical")
+    assert evidence
+    assert all(item.source is not EvidenceSource.openalex for item in evidence)
+
+
+def test_unexpected_errors_from_every_source_raise_a_retrieval_error() -> None:
+    client = FakeCatalog(
+        _routes(
+            openalex=RuntimeError("openalex broke"),
+            arxiv=RuntimeError("arxiv broke"),
+            s2=RuntimeError("s2 broke"),
+        )
+    )
+    with pytest.raises(EvidenceRetrievalError) as caught:
+        retrieve_evidence(client, CLAIM_TEXT, per_source=1, top_k=3, ranker="lexical")
+    assert len(caught.value.errors) == 3
+    assert all("invalid_response" in item for item in caught.value.errors)
+
+
+def test_circuit_skips_a_source_after_consecutive_failures() -> None:
+    circuit = SourceCircuit(limit=2)
+    error = HttpRequestError("down", status_code=503, url="https://api.openalex.org/works")
+    client = FakeCatalog(_routes(openalex=error))
+
+    retrieve_evidence(
+        client,
+        CLAIM_TEXT,
+        per_source=1,
+        top_k=5,
+        ranker="lexical",
+        circuit=circuit,
+    )
+    retrieve_evidence(
+        client,
+        CLAIM_TEXT,
+        per_source=1,
+        top_k=5,
+        ranker="lexical",
+        circuit=circuit,
+    )
+    assert circuit.failures("openalex") == 2
+    calls_before_skip = len(client.urls)
+
+    evidence = retrieve_evidence(
+        client,
+        CLAIM_TEXT,
+        per_source=1,
+        top_k=5,
+        ranker="lexical",
+        circuit=circuit,
+    )
+
+    assert evidence
+    assert all(item.source is not EvidenceSource.openalex for item in evidence)
+    assert not any("openalex" in url for url in client.urls[calls_before_skip:])
+    assert any("arxiv" in url for url in client.urls[calls_before_skip:])
+
+
+def test_circuit_success_resets_the_streak() -> None:
+    circuit = SourceCircuit(limit=2)
+    error = HttpRequestError("down", status_code=503, url="https://api.openalex.org/works")
+    failing = FakeCatalog(_routes(openalex=error))
+    retrieve_evidence(
+        failing,
+        CLAIM_TEXT,
+        per_source=1,
+        top_k=3,
+        ranker="lexical",
+        circuit=circuit,
+    )
+    assert circuit.failures("openalex") == 1
+
+    healthy = FakeCatalog(_routes())
+    retrieve_evidence(
+        healthy,
+        CLAIM_TEXT,
+        per_source=1,
+        top_k=3,
+        ranker="lexical",
+        circuit=circuit,
+    )
+    assert circuit.failures("openalex") == 0
+    assert any("openalex" in url for url in healthy.urls)
+
+
+def test_process_circuit_skips_later_retrievals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAIMFORGE_SOURCE_FAILURE_LIMIT", "1")
+    reset_process_source_circuit()
+    error = HttpRequestError("down", status_code=503, url="https://export.arxiv.org/api/query")
+    failing = FakeCatalog(_routes(arxiv=error))
+    retrieve_evidence(failing, CLAIM_TEXT, per_source=1, top_k=3, ranker="lexical")
+
+    later = FakeCatalog(_routes())
+    evidence = retrieve_evidence(later, CLAIM_TEXT, per_source=1, top_k=3, ranker="lexical")
+
+    assert evidence
+    assert not any("arxiv" in url for url in later.urls)
+    assert any("openalex" in url for url in later.urls)
+
+
+def test_provider_failure_kinds() -> None:
+    assert (
+        classify_provider_failure(
+            HttpRequestError("limited", status_code=429, url="https://example.test")
+        )
+        == "rate_limited"
+    )
+    assert (
+        classify_provider_failure(
+            HttpRequestError("no", status_code=401, url="https://example.test")
+        )
+        == "rejected"
+    )
+    assert (
+        classify_provider_failure(
+            HttpRequestError("down", status_code=503, url="https://example.test")
+        )
+        == "unavailable"
+    )
+    assert classify_provider_failure(RuntimeError("HTTP 429 from upstream")) == "rate_limited"
+    assert classify_provider_failure(RuntimeError("boom")) == "invalid_response"
 
 
 def test_retrieve_evidence_cli_reports_the_selected_ranker(

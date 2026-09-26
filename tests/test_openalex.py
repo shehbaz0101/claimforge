@@ -11,10 +11,12 @@ from claimforge.cli import main
 from claimforge.http_cache import CachedResponse
 from claimforge.openalex import (
     DEFAULT_QUERY,
+    WORK_RECORD_SELECT,
     OpenAlexError,
     Work,
     build_works_search_url,
     format_works,
+    search_work_records,
     search_works,
 )
 
@@ -97,6 +99,32 @@ def test_search_works_rejects_error_status_invalid_json_and_missing_results() ->
         search_works(FakeClient(_cached(200, {"meta": {}})), "pin")
 
 
+def test_search_work_records_requests_abstracts_and_keeps_indexes() -> None:
+    payload = {
+        "results": [
+            {
+                "id": "https://openalex.org/W1",
+                "display_name": "A title",
+                "abstract_inverted_index": {"We": [0], "show": [1]},
+            },
+            {"display_name": "missing id"},
+            "not-an-object",
+        ]
+    }
+    client = FakeClient(_cached(200, payload))
+
+    records = search_work_records(client, "pin", per_page=2)
+
+    assert records == [
+        {
+            "id": "https://openalex.org/W1",
+            "display_name": "A title",
+            "abstract_inverted_index": {"We": [0], "show": [1]},
+        }
+    ]
+    assert parse_qs(urlsplit(client.urls[0]).query)["select"] == [WORK_RECORD_SELECT]
+
+
 def test_format_works_lists_titles_and_ids() -> None:
     text = format_works(
         "pin",
@@ -156,6 +184,56 @@ def test_smoke_cli_returns_one_on_openalex_error(
 
     monkeypatch.setattr("claimforge.cli.search_works", fake_search)
     assert main(["smoke-openalex"]) == 1
+    assert "down" in capsys.readouterr().err
+
+
+def test_extract_claims_cli_prints_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_records(
+        client: object,
+        query: str,
+        *,
+        per_page: int,
+        mailto: str | None,
+    ) -> list[dict[str, object]]:
+        assert query == "graph neural network"
+        assert per_page == 2
+        assert mailto is None
+        return [
+            {
+                "id": "https://openalex.org/W9",
+                "display_name": "GNN paper",
+                "abstract": "We show that message passing improves node accuracy on this benchmark.",
+            }
+        ]
+
+    monkeypatch.setattr("claimforge.cli.search_work_records", fake_records)
+    assert main(["extract-claims", "--query", "graph neural network", "--per-page", "2"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload) == 1
+    assert payload[0]["source_work_id"] == "https://openalex.org/W9"
+    assert payload[0]["source_title"] == "GNN paper"
+    assert payload[0]["claim_type"] == "result"
+    assert "message passing" in payload[0]["text"]
+
+
+def test_extract_claims_cli_returns_one_on_openalex_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_records(
+        client: object,
+        query: str,
+        *,
+        per_page: int,
+        mailto: str | None,
+    ) -> list[dict[str, object]]:
+        raise OpenAlexError("down")
+
+    monkeypatch.setattr("claimforge.cli.search_work_records", fake_records)
+    assert main(["extract-claims", "--query", "pin"]) == 1
     assert "down" in capsys.readouterr().err
 
 

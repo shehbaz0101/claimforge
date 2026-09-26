@@ -7,7 +7,9 @@ evidence pack from OpenAlex, arXiv, and Semantic Scholar. Day 4 re-scores
 that pack with a local embedding model when it is installed, and with TF-IDF
 cosine otherwise, then keeps the top matches. Day 5 judges that pack with a
 deterministic rubric. An optional LLM judge runs only when both
-`CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` are set.
+`CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` are set. Day 6 scores a
+frozen gold fixture with that rubric and reports accuracy, per-label F1, and
+agreement. The eval path does not use the network.
 
 ## Pipeline
 
@@ -36,6 +38,7 @@ flowchart LR
 | Rank | Shipped (Day 4) | Re-score the pack with embedding cosine or TF-IDF cosine and keep top-k. |
 | HTTP disk cache | Shipped (Day 1) | Cache GET responses under `data/cache` and retry 429 / transient 5xx. |
 | Judge | Shipped (Day 5) | Rubric verdict over the top-k pack. Optional LLM when both key and model are set. |
+| Eval | Shipped (Day 6) | Score a frozen gold fixture with the rubric. Accuracy, per-label F1, and agreement. No network. |
 
 ## HTTP cache
 
@@ -214,7 +217,56 @@ Thresholds are inclusive.
 
 Optional LLM judging uses the same gate as extraction. Both `CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` must be set. `CLAIMFORGE_LLM_PROVIDER=rules` forces the rubric. The client speaks OpenAI-compatible chat completions (`CLAIMFORGE_LLM_BASE_URL`, default `https://api.openai.com/v1`). If the call fails or the body does not match the verdict schema, the rubric verdict is returned. Unset variables skip the model, so unit tests and CI stay offline. No key is written to the verdict or the log line.
 
+## Gold eval
+
+`claimforge.eval` scores a frozen fixture with `rubric_verdict`. It does not
+call `retrieve_evidence`, and it does not read `CLAIMFORGE_LLM_*`. A configured
+model cannot change the metrics or open a connection. CI runs this path with
+`pytest -m "not integration"`. There is no live eval test: the packs are
+inline, so a catalog call would not change the score.
+
+The committed fixture is `tests/fixtures/gold_claims.json` (13 items).
+`data/fixtures/README.md` points at that file. Each item has an id, an
+`expected_label` (`support`, `refute`, or `insufficient`), a `Claim`, and an
+`evidence` list. Passages are synthetic illustrations of the rubric, not
+copied abstracts. An empty list is a valid pack. A bare JSON list of items is
+also accepted. Unknown fields are rejected.
+
+```bash
+claimforge eval --fixture tests/fixtures/gold_claims.json
+```
+
+Stdout is a metrics JSON object. Stderr is a short table (`--format both`,
+the default). `--format json` and `--format table` print one of the two.
+The report includes:
+
+| Field | Meaning |
+| --- | --- |
+| `accuracy` | Correct labels divided by the number of items. |
+| `agreement_rate` | The same fraction. One judge and one gold label per item, so raw agreement equals accuracy. Both names are in the report. |
+| `per_label` | Precision, recall, and F1 for `support`, `refute`, and `insufficient`. A rate is null when its denominator is zero. F1 is null unless both precision and recall are defined. |
+| `macro_f1` | Mean of the defined per-label F1 values. Labels that were neither gold nor predicted are left out. |
+| `confusion` | Gold label by predicted label. |
+| `items` | Per-item expected label, predicted label, match, and confidence. |
+| `meets_threshold` | True when `accuracy >= min_accuracy`. The comparison is inclusive. |
+
+The command exits 0 after a successful run. `--strict` exits 1 when accuracy
+is below `--min-accuracy`. The default bar is **1.0**, because every label in
+the committed fixture matches the rubric. A bad fixture or a bad flag exits 2,
+same as the other commands. Metrics are still printed when `--strict` fails.
+
+```bash
+claimforge eval --fixture tests/fixtures/gold_claims.json --strict
+claimforge eval --fixture tests/fixtures/gold_claims.json --strict --min-accuracy 0.8
+```
+
+```mermaid
+flowchart LR
+  fixture[Gold fixture] --> rubric[Rubric judge]
+  rubric --> metrics[Accuracy, F1, agreement]
+```
+
 ## Planned components
 
-- **Eval harness (Day 6).** Frozen fixtures, gold claims, and agreement metrics against this rubric.
+- **API (Day 7).** A FastAPI service in front of extract, retrieve, and judge, plus a polished batch-eval CLI surface on top of this command.
 - **Evidence store.** Hold the passages the judge is allowed to see.

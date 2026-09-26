@@ -9,6 +9,9 @@ cosine similarity.
 ``verify`` runs that retrieval and then the judge, and prints a verdict.
 ``judge`` scores a claim against a saved evidence file and does not use
 the network.
+``eval`` scores a gold fixture with the rubric and prints accuracy,
+per-label F1, and agreement. It does not use the network. Exit code 0
+unless ``--strict`` and accuracy is below ``--min-accuracy``.
 """
 
 from __future__ import annotations
@@ -22,6 +25,14 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from claimforge import __version__
+from claimforge.eval import (
+    DEFAULT_MIN_ACCURACY,
+    GoldFixtureError,
+    evaluate_gold,
+    format_eval_table,
+    load_gold_fixture,
+    parse_min_accuracy,
+)
 from claimforge.extract import extract_from_openalex_work
 from claimforge.http_cache import CachedHttpClient, ClaimForgeError
 from claimforge.judge import claim_from_text, judge_claim
@@ -153,6 +164,38 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="evidence list, one evidence object, or packs paired by claim_id",
     )
+
+    evaluate = subparsers.add_parser(
+        "eval",
+        help="Score a gold fixture with the rubric and print agreement metrics",
+    )
+    evaluate.add_argument(
+        "--fixture",
+        type=Path,
+        required=True,
+        help="gold claims JSON, for example tests/fixtures/gold_claims.json",
+    )
+    evaluate.add_argument(
+        "--format",
+        dest="output_format",
+        choices=("both", "json", "table"),
+        default="both",
+        help="both writes a table to stderr and JSON to stdout (default: both)",
+    )
+    evaluate.add_argument(
+        "--min-accuracy",
+        type=float,
+        default=DEFAULT_MIN_ACCURACY,
+        help=(
+            "inclusive accuracy bar for --strict, from 0 to 1 "
+            f"(default: {DEFAULT_MIN_ACCURACY:.1f})"
+        ),
+    )
+    evaluate.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 1 when accuracy is below --min-accuracy; otherwise exit 0",
+    )
     return parser
 
 
@@ -189,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
         return _verify(parser, args)
     if args.command == "judge":
         return _judge(parser, args)
+    if args.command == "eval":
+        return _eval(parser, args)
     parser.error(f"unknown command {args.command}")
     return 2
 
@@ -327,6 +372,33 @@ def _judge(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         parser.error(str(exc))
     verdicts = [judge_claim(claim, evidence) for claim, evidence in zip(claims, packs, strict=True)]
     _print_verdicts(verdicts)
+    return 0
+
+
+def _eval(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    try:
+        minimum = parse_min_accuracy(args.min_accuracy)
+        items = load_gold_fixture(args.fixture)
+    except GoldFixtureError as exc:
+        parser.error(str(exc))
+    report = evaluate_gold(
+        items,
+        fixture=str(args.fixture),
+        min_accuracy=minimum,
+    )
+    table = format_eval_table(report)
+    if args.output_format == "table":
+        print(table)
+    elif args.output_format == "both":
+        print(table, file=sys.stderr)
+    if args.output_format in ("json", "both"):
+        print(json.dumps(report.to_json_dict(), indent=2, ensure_ascii=False))
+    if args.strict and not report.meets_threshold:
+        print(
+            f"accuracy {report.accuracy:.4f} is below {report.min_accuracy:.4f}",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

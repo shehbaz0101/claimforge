@@ -1,11 +1,13 @@
 # Architecture
 
-ClaimForge will check a scientific claim against the literature and record an
-LLM judge's verdict. Day 1 shipped the project skeleton and a cached OpenAlex
-client. Day 2 adds the claim schema and an abstract extractor. Day 3 retrieves
-an evidence pack from OpenAlex, arXiv, and Semantic Scholar. Day 4 re-scores
+ClaimForge checks a scientific claim against the literature and records a
+verdict. Day 1 shipped the project skeleton and a cached OpenAlex client.
+Day 2 adds the claim schema and an abstract extractor. Day 3 retrieves an
+evidence pack from OpenAlex, arXiv, and Semantic Scholar. Day 4 re-scores
 that pack with a local embedding model when it is installed, and with TF-IDF
-cosine otherwise, then keeps the top matches. The judge is not built yet.
+cosine otherwise, then keeps the top matches. Day 5 judges that pack with a
+deterministic rubric. An optional LLM judge runs only when both
+`CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` are set.
 
 ## Pipeline
 
@@ -22,7 +24,7 @@ flowchart LR
   s2 --> cache
   retrieve --> evidence[Evidence pack]
   evidence --> rank[Rank top-k]
-  claims --> judge[LLM judge]
+  claims --> judge[Rubric judge]
   rank --> judge
   judge --> verdict[Support, refute, or insufficient]
 ```
@@ -33,7 +35,7 @@ flowchart LR
 | Retrieve | Shipped (Day 3) | Query OpenAlex, arXiv, and Semantic Scholar. Deduplicate catalog copies. |
 | Rank | Shipped (Day 4) | Re-score the pack with embedding cosine or TF-IDF cosine and keep top-k. |
 | HTTP disk cache | Shipped (Day 1) | Cache GET responses under `data/cache` and retry 429 / transient 5xx. |
-| LLM judge | Planned (Day 5) | Rubric and verdict engine. No judge is called. |
+| Judge | Shipped (Day 5) | Rubric verdict over the top-k pack. Optional LLM when both key and model are set. |
 
 ## HTTP cache
 
@@ -176,11 +178,43 @@ ranker and do not download a model.
 `--ranker embeddings` fails before any catalog request when the extra is
 missing. `retrieve_evidence(..., ranker="lexical")` forces the offline path.
 
+## Verdict
+
+`claimforge.models.Verdict` is a frozen Pydantic model. Extra fields are
+rejected. `judge_claim(claim, evidence)` returns one verdict. The default
+path is `rubric_verdict`, which does not read the environment and does not
+call a model.
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `claim_id` | yes | The claim id. `claimforge verify --text` hashes the text into a `clm_` id and sets `source_work_id` to `claimforge:text`. |
+| `label` | yes | `support`, `refute`, or `insufficient`. |
+| `confidence` | yes | Confidence in that label, in `[0, 1]`. |
+| `rationale` | yes | Short explanation, at most 500 characters. |
+| `evidence_ids` | yes | Ids of the packed evidence, in pack order. Empty when nothing was packed. |
+| `rubric_scores` | yes | Map of criterion to a float, or null when that criterion was not scored. |
+
+The rubric always writes three scores:
+
+| Criterion | Range | Rule |
+| --- | --- | --- |
+| `relevance` | `[0, 1]` | Average of the max and the mean ranker `score` on the pack. Scores above 1 are clipped. Missing scores are ignored. No scores means 0. |
+| `coverage` | `[0, 1]` | Average of two ratios, each capped at 1: non-empty snippets divided by 2, and distinct catalogs among those snippets divided by 2. Two snippets from two catalogs score 1. One snippet from one catalog scores 0.5. Empty snippets do not count. |
+| `stance_lexical` | `[-1, 1]` | Weighted mean of per-snippet votes. A snippet votes only when it shares claim terms. Support phrases and an unnegated claim verb (`reduce`, `increase`, `improve`, and a few opposites) vote `+1`. Refute phrases, a negated claim verb, or an unnegated opposite vote `-1`. Anything else votes `0` and pulls the mean toward the middle. Ranker scores are the weights. A missing score weighs 1. A zero score does not vote. The title is not read. |
+
+Thresholds are inclusive.
+
+- **Support** when `relevance >= 0.55`, `coverage >= 0.75`, and `stance_lexical >= 0.20`.
+- **Refute** when `stance_lexical <= -0.20` and `relevance >= 0.35`. Coverage is not required.
+- **Insufficient** otherwise, including an empty pack, a high-scoring pack with no stance cues, a support lean that fails coverage or relevance, and a refute lean whose relevance is below 0.35.
+
+`claimforge verify --text "..."` reuses Day 3/4 retrieval (`retrieve_evidence`, including `--top-k`, `--per-source`, `--ranker`, and the disk cache) and then judges. Stdout is one verdict object. Several claims from `--claim-json` print a JSON array. Stderr is `ranker: lexical` or `ranker: embeddings`, same as `retrieve-evidence`. The command exits 1 when every catalog fails.
+
+`claimforge judge --claim-json claims.json --evidence-json evidence.json` does not use the network. One claim accepts an evidence list or one evidence object. Several claims accept a `claim_id` to list map, or a list of `{"claim_id", "evidence"}` objects.
+
+Optional LLM judging uses the same gate as extraction. Both `CLAIMFORGE_LLM_API_KEY` and `CLAIMFORGE_LLM_MODEL` must be set. `CLAIMFORGE_LLM_PROVIDER=rules` forces the rubric. The client speaks OpenAI-compatible chat completions (`CLAIMFORGE_LLM_BASE_URL`, default `https://api.openai.com/v1`). If the call fails or the body does not match the verdict schema, the rubric verdict is returned. Unset variables skip the model, so unit tests and CI stay offline. No key is written to the verdict or the log line.
+
 ## Planned components
 
-These names describe later days. They have no modules yet.
-
-- **Judge (Day 5).** A rubric and verdict engine. The judge reads the top-k
-  pack from this ranker. No provider is called.
+- **Eval harness (Day 6).** Frozen fixtures, gold claims, and agreement metrics against this rubric.
 - **Evidence store.** Hold the passages the judge is allowed to see.
-- **Eval harness.** Frozen claims, expected labels, and a score report.

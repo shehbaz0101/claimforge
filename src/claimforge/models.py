@@ -1,7 +1,8 @@
-"""Strict, JSON-serializable claim and evidence schemas.
+"""Strict, JSON-serializable claim, evidence, and verdict schemas.
 
 Day 2 stores one atomic claim and the OpenAlex work it was taken from.
-Day 3 adds an evidence record gathered for that claim. A verdict is later.
+Day 3 adds an evidence record gathered for that claim. Day 5 adds the
+verdict a judge records for that claim.
 """
 
 from __future__ import annotations
@@ -123,6 +124,109 @@ class Evidence(BaseModel):
         return self.model_dump(mode="json")
 
 
+class VerdictLabel(StrEnum):
+    """Judge outcome. Values are the JSON spellings."""
+
+    support = "support"
+    refute = "refute"
+    insufficient = "insufficient"
+
+
+# Canonical rubric keys and the closed range each score must fall in.
+# ``stance_lexical`` is signed: negative leans refute, positive leans support.
+RUBRIC_BOUNDS: dict[str, tuple[float, float]] = {
+    "relevance": (0.0, 1.0),
+    "coverage": (0.0, 1.0),
+    "stance_lexical": (-1.0, 1.0),
+}
+_RATIONALE_LIMIT = 500
+
+
+class Verdict(BaseModel):
+    """One judge outcome for a claim.
+
+    ``rubric_scores`` maps a criterion name to a float, or null when that
+    criterion was not scored. The Day 5 rubric always fills ``relevance``,
+    ``coverage``, and ``stance_lexical``. Extra fields are rejected.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    claim_id: str
+    label: VerdictLabel
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str
+    evidence_ids: list[str]
+    rubric_scores: dict[str, float | None] = Field(default_factory=dict)
+
+    @field_validator("claim_id")
+    @classmethod
+    def _require_claim_id(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+    @field_validator("confidence")
+    @classmethod
+    def _finite_confidence(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("confidence must be finite")
+        return value
+
+    @field_validator("rationale")
+    @classmethod
+    def _short_rationale(cls, value: str) -> str:
+        stripped = " ".join(value.split())
+        if not stripped:
+            raise ValueError("must not be blank")
+        if len(stripped) > _RATIONALE_LIMIT:
+            raise ValueError(f"must be at most {_RATIONALE_LIMIT} characters")
+        return stripped
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def _evidence_ids(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("evidence id must be a string")
+            stripped = item.strip()
+            if not stripped:
+                raise ValueError("evidence id must not be blank")
+            cleaned.append(stripped)
+        return cleaned
+
+    @field_validator("rubric_scores")
+    @classmethod
+    def _rubric_scores(cls, value: dict[str, float | None]) -> dict[str, float | None]:
+        cleaned: dict[str, float | None] = {}
+        for key, score in value.items():
+            if not isinstance(key, str):
+                raise ValueError("rubric criterion must be a string")
+            name = key.strip()
+            if not name:
+                raise ValueError("rubric criterion must not be blank")
+            if score is None:
+                cleaned[name] = None
+                continue
+            if isinstance(score, bool) or not isinstance(score, (int, float)):
+                raise ValueError("rubric score must be a number or null")
+            number = float(score)
+            if not math.isfinite(number):
+                raise ValueError("rubric score must be finite")
+            low, high = RUBRIC_BOUNDS.get(name, (-1.0, 1.0))
+            if number < low or number > high:
+                raise ValueError(f"{name} must be between {low} and {high}")
+            cleaned[name] = round(number, 4)
+        return cleaned
+
+    def to_json_dict(self) -> dict[str, object]:
+        """Return a JSON-ready dict (enum values, no Python-only types)."""
+
+        return self.model_dump(mode="json")
+
+
 def dump_claims(claims: list[Claim]) -> list[dict[str, object]]:
     """Serialize claims for JSON output."""
 
@@ -133,3 +237,9 @@ def dump_evidence(evidence: list[Evidence]) -> list[dict[str, object]]:
     """Serialize evidence for JSON output."""
 
     return [item.to_json_dict() for item in evidence]
+
+
+def dump_verdicts(verdicts: list[Verdict]) -> list[dict[str, object]]:
+    """Serialize verdicts for JSON output."""
+
+    return [verdict.to_json_dict() for verdict in verdicts]

@@ -10,7 +10,9 @@ path runs only when `CLAIMFORGE_LLM_*` is set. Day 3 retrieves evidence from
 OpenAlex, arXiv, and Semantic Scholar. Day 4 re-scores that pack and keeps
 the top matches. Day 5 judges the pack with a rubric and records support,
 refute, or insufficient evidence. The same LLM variables can replace that
-rubric. Leave them unset to stay offline.
+rubric. Leave them unset to stay offline. Day 6 scores a frozen gold fixture
+with the rubric and prints accuracy, per-label F1, and agreement. That
+command does not use the network.
 
 ## Why this shape
 
@@ -27,7 +29,8 @@ extractor, the retriever, and the judge can be tested apart from each other.
 Day 1 implements the cache and a works search. Day 2 implements claim
 extraction from abstracts. Day 3 implements multi-source evidence retrieval.
 Day 4 ranks the pack with a local embedding model or with TF-IDF cosine.
-Day 5 judges that pack. See [docs/architecture.md](docs/architecture.md).
+Day 5 judges that pack. Day 6 scores a gold fixture against that judge.
+See [docs/architecture.md](docs/architecture.md).
 
 ```mermaid
 flowchart LR
@@ -163,6 +166,28 @@ claimforge judge --claim-json claim.json --evidence-json evidence.json
 need a list of `{"claim_id", "evidence"}` objects, or a map from claim id to
 that list.
 
+## Evaluate gold claims
+
+```bash
+claimforge eval --fixture tests/fixtures/gold_claims.json
+```
+
+That scores `tests/fixtures/gold_claims.json` with the rubric judge. The
+fixture holds 13 claims. Each one includes an inline evidence pack, so the
+command does not search OpenAlex, arXiv, or Semantic Scholar and does not
+call a model. Stdout is metrics JSON (accuracy, per-label F1, agreement,
+confusion, and each item). Stderr is a short table. Agreement equals accuracy
+here: one judge, one gold label per item.
+
+The command exits 0. `--strict` exits 1 when accuracy is below
+`--min-accuracy`. The default bar is 1.0, and the committed fixture meets it.
+A bad fixture exits 2.
+
+```bash
+claimforge eval --fixture tests/fixtures/gold_claims.json --strict
+claimforge eval --fixture tests/fixtures/gold_claims.json --format json
+```
+
 ## Tests
 
 Unit tests mock the HTTP transport and score with the lexical ranker. They
@@ -190,8 +215,10 @@ pytest -m integration
   TF-IDF cosine otherwise. The default judge reads those scores and a small
   cue list. It misses paraphrases that do not share claim terms or a listed
   cue, and a high score with no cue stays insufficient.
-- No gold-set eval is shipped yet. Day 6 adds fixtures, gold claims, and
-  agreement metrics.
+- Gold eval scores the frozen fixture with the rubric. Passages are
+  synthetic. The set locks this judge; it is not a human-annotated corpus.
+  `--strict` exits 1 when accuracy is below 1.0. Without `--strict` the
+  command still prints metrics and exits 0.
 - The disk cache has no TTL and no size cap. Delete `data/cache` to refresh.
 - Retries cover 429, 500, 502, 503, 504, and connection failures. Other HTTP
   statuses are returned to the caller.

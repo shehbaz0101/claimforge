@@ -9,3 +9,8 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ["--maxkb=512"]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      # `ruff check` only. No --fix, so a commit does not rewrite files.
+      - id: ruff-check

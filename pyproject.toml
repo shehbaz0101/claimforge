@@ -34,6 +34,9 @@ dev = [
 # Local embedding ranker. CI does not install this extra: the default path
 # ranks with TF-IDF cosine and stays offline.
 embeddings = ["sentence-transformers>=3.0"]
+# Optional. CI runs `ruff check` with the selection below. Not required to
+# import or run ClaimForge.
+lint = ["ruff>=0.16"]
 
 [project.urls]
 Homepage = "https://github.com/shehbaz0101/claimforge"
@@ -44,6 +47,16 @@ claimforge = "claimforge.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Bug-finding checks plus import order. E501 is omitted so Days 1–8 are not
+# restyled for line length. `ruff check` in CI uses this selection.
+select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
